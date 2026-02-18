@@ -22,9 +22,9 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include "game_test.h"
+#include "GameTest.h"
 
-int game_test_score(int hits, int multiplier) {
+int GameTest_Score(int hits, int multiplier) {
   if (hits < 0 || multiplier < 1) {
     return -1;
   }

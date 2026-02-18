@@ -22,19 +22,24 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+#pragma once
+
+#include <stdint.h>
 #include <stdio.h>
-#include "GameTest.h"
+#include <stdbool.h>
 
-int main(void) {
-  int hits = 7;
-  int multiplier = 3;
-  int score = GameTest_Score(hits, multiplier);
-
-  printf("game_test_score(%d, %d) = %d\n", hits, multiplier, score);
-
-  /* Invalid input example */
-  int bad = GameTest_Score(-1, 2);
-  printf("game_test_score(-1, 2) = %d  (expected -1)\n", bad);
-
-  return 0;
-}
+#if defined(GAME_TEST_SHARED)
+#  if defined(_WIN32) || defined(_WIN64)
+#    if defined(GAME_TEST_EXPORTS)
+#      define GAME_TEST_API __declspec(dllexport)
+#    else
+#      define GAME_TEST_API __declspec(dllimport)
+#    endif
+#  elif __GNUC__ >= 4
+#    define GAME_TEST_API __attribute__((visibility("default")))
+#  else
+#    define GAME_TEST_API
+#  endif
+#else
+#  define GAME_TEST_API
+#endif

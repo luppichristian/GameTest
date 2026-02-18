@@ -24,27 +24,4 @@ SOFTWARE.
 
 #pragma once
 
-#if defined(GAME_TEST_SHARED)
-#  if defined(_WIN32) || defined(_WIN64)
-#    if defined(GAME_TEST_EXPORTS)
-#      define GAME_TEST_API __declspec(dllexport)
-#    else
-#      define GAME_TEST_API __declspec(dllimport)
-#    endif
-#  elif __GNUC__ >= 4
-#    define GAME_TEST_API __attribute__((visibility("default")))
-#  else
-#    define GAME_TEST_API
-#  endif
-#else
-#  define GAME_TEST_API
-#endif
-
-/**
- * Calculates the final score for a game round.
- *
- * @param hits       Number of successful hits.
- * @param multiplier Score multiplier (must be >= 1).
- * @return           The final score (hits * multiplier), or -1 on invalid input.
- */
-GAME_TEST_API int game_test_score(int hits, int multiplier);
+#include "InputState.h"

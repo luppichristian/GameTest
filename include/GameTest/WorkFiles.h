@@ -22,19 +22,4 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#include <stdio.h>
-#include "GameTest.h"
-
-int main(void) {
-  int hits = 7;
-  int multiplier = 3;
-  int score = GameTest_Score(hits, multiplier);
-
-  printf("game_test_score(%d, %d) = %d\n", hits, multiplier, score);
-
-  /* Invalid input example */
-  int bad = GameTest_Score(-1, 2);
-  printf("game_test_score(-1, 2) = %d  (expected -1)\n", bad);
-
-  return 0;
-}
+#pragma once
