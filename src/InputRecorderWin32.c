@@ -26,15 +26,15 @@ SOFTWARE.
 #include "UtilityWin32.h"
 #include "GameTest/InputRecorder.h"
 
-static FILE*         s_file           = NULL;
-static bool          s_recording      = false;
+static FILE* s_file = NULL;
+static bool s_recording = false;
 static LARGE_INTEGER s_startTime;
 static LARGE_INTEGER s_frequency;
-static HHOOK         s_kbHook         = NULL;
-static HHOOK         s_mouseHook      = NULL;
-static HANDLE        s_hookThread     = NULL;
-static DWORD         s_hookThreadId   = 0;
-static HANDLE        s_hookReadyEvent = NULL;
+static HHOOK s_kbHook = NULL;
+static HHOOK s_mouseHook = NULL;
+static HANDLE s_hookThread = NULL;
+static DWORD s_hookThreadId = 0;
+static HANDLE s_hookReadyEvent = NULL;
 
 static volatile float s_scrollDeltaX = 0.0f;
 static volatile float s_scrollDeltaY = 0.0f;
@@ -185,8 +185,8 @@ static void SampleInputState(GameTest_InputState* out) {
 
 static DWORD WINAPI RecorderHookThreadProc(LPVOID unused) {
   (void)unused;
-  s_kbHook    = SetWindowsHookExW(WH_KEYBOARD_LL, KbHookProc,    NULL, 0);
-  s_mouseHook = SetWindowsHookExW(WH_MOUSE_LL,    MouseHookProc, NULL, 0);
+  s_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, KbHookProc, NULL, 0);
+  s_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, MouseHookProc, NULL, 0);
   /* Signal Start() – hooks are now installed (or failed). */
   SetEvent(s_hookReadyEvent);
   /* Run the message loop that keeps LL hook callbacks firing. */
@@ -195,8 +195,14 @@ static DWORD WINAPI RecorderHookThreadProc(LPVOID unused) {
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }
-  if (s_kbHook)    { UnhookWindowsHookEx(s_kbHook);    s_kbHook    = NULL; }
-  if (s_mouseHook) { UnhookWindowsHookEx(s_mouseHook); s_mouseHook = NULL; }
+  if (s_kbHook) {
+    UnhookWindowsHookEx(s_kbHook);
+    s_kbHook = NULL;
+  }
+  if (s_mouseHook) {
+    UnhookWindowsHookEx(s_mouseHook);
+    s_mouseHook = NULL;
+  }
   return 0;
 }
 
@@ -229,25 +235,36 @@ GAME_TEST_API bool GameTest_InputRecorder_Start(const char* filename) {
   QueryPerformanceCounter(&s_startTime);
 
   s_hookReadyEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
-  if (!s_hookReadyEvent) { fclose(s_file); s_file = NULL; DeleteCriticalSection(&s_cs); return false; }
+  if (!s_hookReadyEvent) {
+    fclose(s_file);
+    s_file = NULL;
+    DeleteCriticalSection(&s_cs);
+    return false;
+  }
 
   s_hookThread = CreateThread(NULL, 0, RecorderHookThreadProc, NULL, 0, &s_hookThreadId);
   if (!s_hookThread) {
-    CloseHandle(s_hookReadyEvent); s_hookReadyEvent = NULL;
-    fclose(s_file); s_file = NULL;
+    CloseHandle(s_hookReadyEvent);
+    s_hookReadyEvent = NULL;
+    fclose(s_file);
+    s_file = NULL;
     DeleteCriticalSection(&s_cs);
     return false;
   }
 
   /* Wait until RecorderHookThreadProc has called SetWindowsHookExW. */
   WaitForSingleObject(s_hookReadyEvent, INFINITE);
-  CloseHandle(s_hookReadyEvent); s_hookReadyEvent = NULL;
+  CloseHandle(s_hookReadyEvent);
+  s_hookReadyEvent = NULL;
 
   if (!s_kbHook || !s_mouseHook) {
     PostThreadMessageW(s_hookThreadId, WM_QUIT, 0, 0);
     WaitForSingleObject(s_hookThread, INFINITE);
-    CloseHandle(s_hookThread); s_hookThread = NULL; s_hookThreadId = 0;
-    fclose(s_file); s_file = NULL;
+    CloseHandle(s_hookThread);
+    s_hookThread = NULL;
+    s_hookThreadId = 0;
+    fclose(s_file);
+    s_file = NULL;
     DeleteCriticalSection(&s_cs);
     return false;
   }
@@ -262,10 +279,12 @@ GAME_TEST_API bool GameTest_InputRecorder_Stop(void) {
   /* Ask the hook thread to exit, then wait for it to UnhookWindowsHookEx. */
   PostThreadMessageW(s_hookThreadId, WM_QUIT, 0, 0);
   WaitForSingleObject(s_hookThread, INFINITE);
-  CloseHandle(s_hookThread); s_hookThread = NULL; s_hookThreadId = 0;
+  CloseHandle(s_hookThread);
+  s_hookThread = NULL;
+  s_hookThreadId = 0;
 
   fclose(s_file);
-  s_file      = NULL;
+  s_file = NULL;
   s_recording = false;
   DeleteCriticalSection(&s_cs);
   return true;

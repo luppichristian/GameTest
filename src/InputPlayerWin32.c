@@ -26,14 +26,14 @@ SOFTWARE.
 #include "UtilityWin32.h"
 #include "GameTest/InputPlayer.h"
 
-static FILE*               s_file           = NULL;
-static bool                s_playing        = false;
-static bool                s_inputBlocked   = false;
-static HHOOK               s_kbHook         = NULL;
-static HHOOK               s_mouseHook      = NULL;
-static HANDLE              s_hookThread     = NULL;
-static DWORD               s_hookThreadId   = 0;
-static HANDLE              s_hookReadyEvent = NULL;
+static FILE* s_file = NULL;
+static bool s_playing = false;
+static bool s_inputBlocked = false;
+static HHOOK s_kbHook = NULL;
+static HHOOK s_mouseHook = NULL;
+static HANDLE s_hookThread = NULL;
+static DWORD s_hookThreadId = 0;
+static HANDLE s_hookReadyEvent = NULL;
 static GameTest_InputState s_prevState;
 
 // ---------------------------------------------------------------------------
@@ -223,8 +223,8 @@ static void SynthesizeFrame(const GameTest_InputState* prev,
 
 static DWORD WINAPI PlayerHookThreadProc(LPVOID unused) {
   (void)unused;
-  s_kbHook    = SetWindowsHookExW(WH_KEYBOARD_LL, PlayerKbHookProc,    NULL, 0);
-  s_mouseHook = SetWindowsHookExW(WH_MOUSE_LL,    PlayerMouseHookProc, NULL, 0);
+  s_kbHook = SetWindowsHookExW(WH_KEYBOARD_LL, PlayerKbHookProc, NULL, 0);
+  s_mouseHook = SetWindowsHookExW(WH_MOUSE_LL, PlayerMouseHookProc, NULL, 0);
   /* Signal Start() – hooks are now installed (or failed). */
   SetEvent(s_hookReadyEvent);
   /* Run the message loop that keeps LL hook callbacks firing. */
@@ -233,8 +233,14 @@ static DWORD WINAPI PlayerHookThreadProc(LPVOID unused) {
     TranslateMessage(&msg);
     DispatchMessageW(&msg);
   }
-  if (s_kbHook)    { UnhookWindowsHookEx(s_kbHook);    s_kbHook    = NULL; }
-  if (s_mouseHook) { UnhookWindowsHookEx(s_mouseHook); s_mouseHook = NULL; }
+  if (s_kbHook) {
+    UnhookWindowsHookEx(s_kbHook);
+    s_kbHook = NULL;
+  }
+  if (s_mouseHook) {
+    UnhookWindowsHookEx(s_mouseHook);
+    s_mouseHook = NULL;
+  }
   return 0;
 }
 
@@ -243,8 +249,8 @@ static DWORD WINAPI PlayerHookThreadProc(LPVOID unused) {
 // ---------------------------------------------------------------------------
 
 GAME_TEST_API bool GameTest_InputPlayer_Start(const char* filename) {
-  if (s_playing)  return false;
-  if (!filename)  return false;
+  if (s_playing) return false;
+  if (!filename) return false;
 
   s_file = fopen(filename, "rb");
   if (!s_file) return false;
@@ -252,24 +258,34 @@ GAME_TEST_API bool GameTest_InputPlayer_Start(const char* filename) {
   memset(&s_prevState, 0, sizeof(s_prevState));
 
   s_hookReadyEvent = CreateEventW(NULL, FALSE, FALSE, NULL);
-  if (!s_hookReadyEvent) { fclose(s_file); s_file = NULL; return false; }
+  if (!s_hookReadyEvent) {
+    fclose(s_file);
+    s_file = NULL;
+    return false;
+  }
 
   s_hookThread = CreateThread(NULL, 0, PlayerHookThreadProc, NULL, 0, &s_hookThreadId);
   if (!s_hookThread) {
-    CloseHandle(s_hookReadyEvent); s_hookReadyEvent = NULL;
-    fclose(s_file); s_file = NULL;
+    CloseHandle(s_hookReadyEvent);
+    s_hookReadyEvent = NULL;
+    fclose(s_file);
+    s_file = NULL;
     return false;
   }
 
   /* Wait until PlayerHookThreadProc has called SetWindowsHookExW. */
   WaitForSingleObject(s_hookReadyEvent, INFINITE);
-  CloseHandle(s_hookReadyEvent); s_hookReadyEvent = NULL;
+  CloseHandle(s_hookReadyEvent);
+  s_hookReadyEvent = NULL;
 
   if (!s_kbHook || !s_mouseHook) {
     PostThreadMessageW(s_hookThreadId, WM_QUIT, 0, 0);
     WaitForSingleObject(s_hookThread, INFINITE);
-    CloseHandle(s_hookThread); s_hookThread = NULL; s_hookThreadId = 0;
-    fclose(s_file); s_file = NULL;
+    CloseHandle(s_hookThread);
+    s_hookThread = NULL;
+    s_hookThreadId = 0;
+    fclose(s_file);
+    s_file = NULL;
     return false;
   }
 
@@ -292,15 +308,20 @@ GAME_TEST_API bool GameTest_InputPlayer_Stop(void) {
   SynthesizeFrame(&s_prevState, &empty);
 
   /* Restore physical input before the hooks are torn down. */
-  if (s_inputBlocked) { BlockInput(FALSE); s_inputBlocked = false; }
+  if (s_inputBlocked) {
+    BlockInput(FALSE);
+    s_inputBlocked = false;
+  }
 
   /* Ask the hook thread to exit, then wait for it to UnhookWindowsHookEx. */
   PostThreadMessageW(s_hookThreadId, WM_QUIT, 0, 0);
   WaitForSingleObject(s_hookThread, INFINITE);
-  CloseHandle(s_hookThread); s_hookThread = NULL; s_hookThreadId = 0;
+  CloseHandle(s_hookThread);
+  s_hookThread = NULL;
+  s_hookThreadId = 0;
 
   fclose(s_file);
-  s_file    = NULL;
+  s_file = NULL;
   s_playing = false;
   return true;
 }
