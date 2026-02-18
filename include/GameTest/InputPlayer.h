@@ -25,3 +25,17 @@ SOFTWARE.
 #pragma once
 
 #include "InputState.h"
+
+// Playback input from a file. Returns true on success.
+// Only one playback can be active at a time.
+// If a playback is already active, this will fail.
+// The file remains open until Stop() is called.
+GAME_TEST_API bool GameTest_InputPlayer_Start(const char* filename);
+
+// Stop playback input. Returns true on success.
+GAME_TEST_API bool GameTest_InputPlayer_Stop(void);
+
+// Update the player (e.g. read the current frame's input from the file). Returns true on success.
+// This should be called once per frame while playback is active.
+// You can pause/resume playback by skipping calls to Update() while keeping the file open.
+GAME_TEST_API bool GameTest_InputPlayer_Update(void);

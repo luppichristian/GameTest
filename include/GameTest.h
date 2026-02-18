@@ -28,13 +28,3 @@ SOFTWARE.
 #include "GameTest/InputState.h"
 #include "GameTest/InputRecorder.h"
 #include "GameTest/InputPlayer.h"
-#include "GameTest/WorkFiles.h"
-
-/**
- * Calculates the final score for a game round.
- *
- * @param hits       Number of successful hits.
- * @param multiplier Score multiplier (must be >= 1).
- * @return           The final score (hits * multiplier), or -1 on invalid input.
- */
-GAME_TEST_API int GameTest_Score(int hits, int multiplier);

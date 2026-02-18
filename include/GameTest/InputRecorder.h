@@ -25,3 +25,17 @@ SOFTWARE.
 #pragma once
 
 #include "InputState.h"
+
+// Start recording input to a file. Returns true on success.
+// Only one recording can be active at a time.
+// If a recording is already active, this will fail.
+// The file remains open until Stop() is called.
+GAME_TEST_API bool GameTest_InputRecorder_Start(const char* filename);
+
+// Stop recording input. Returns true on success.
+GAME_TEST_API bool GameTest_InputRecorder_Stop(void);
+
+// Update the recorder (e.g. write the current frame's input to the file). Returns true on success.
+// This should be called once per frame while recording is active.
+// You can pause/resume recording by skipping calls to Update() while keeping the file open.
+GAME_TEST_API bool GameTest_InputRecorder_Update(void);

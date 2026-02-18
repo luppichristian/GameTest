@@ -26,12 +26,6 @@ SOFTWARE.
 
 #include "Base.h"
 
-// Raw data buffer
-typedef struct GameTest_RawInput {
-  void* rawData;
-  size_t rawDataSize;
-} GameTest_RawInput;
-
 // Mouse buttons
 typedef uint8_t GameTest_ButtonBits;
 typedef enum GameTest_Button {
@@ -214,6 +208,8 @@ typedef struct GameTest_KeyState {
 
 // Input state
 typedef struct GameTest_InputState {
+  float timestamp;  // seconds since recording started (or since playback started, if playing back)
+
   // Mouse buttons: bitmask of currently held buttons
   GameTest_ButtonBits buttonsDownBits;
 
@@ -231,39 +227,4 @@ typedef struct GameTest_InputState {
   // Text input: UTF-32 codepoints entered this frame (handles IME, dead keys, etc.)
   uint32_t textInput[32];
   size_t textInputCount;
-
-  // Raw input buffers for devices not covered by the structured fields above
-  // (e.g. gamepads, joysticks, steering wheels, stylus).
-  // NOTE: when recording, serialize the bytes rawData points to via rawDataSize,
-  // not the pointer value itself.
-  GameTest_RawInput* rawInputBuffers[32];
-  size_t rawInputBufferCount;
 } GameTest_InputState;
-
-// Read an InputState from a file (e.g. a recording).
-// The caller is responsible for freeing the returned InputState.
-GAME_TEST_API GameTest_InputState* GameTest_InputState_Read(FILE* file);
-
-// Duplicate an InputState (e.g. for storing in a recording).
-GAME_TEST_API GameTest_InputState* GameTest_InputState_Duplicate(const GameTest_InputState* inputState);
-
-// Create an empty InputState (e.g. for synthesizing input).
-GAME_TEST_API GameTest_InputState* GameTest_InputState_Empty(void);
-
-// Free an InputState.
-GAME_TEST_API bool GameTest_InputState_Free(GameTest_InputState* inputState);
-
-// Write an InputState to a file (e.g. for recording).
-GAME_TEST_API bool GameTest_InputState_Write(const GameTest_InputState* inputState, FILE* file);
-
-// Add a raw input buffer to an InputState (e.g. for recording gamepad input).
-GAME_TEST_API bool GameTest_InputState_AddRawInput(
-    GameTest_InputState* inputState,
-    const void* rawData,
-    size_t rawDataSize);
-
-// Clear all raw input buffers from an InputState (e.g. to free memory after processing).
-GAME_TEST_API bool GameTest_InputState_ClearRawInput(GameTest_InputState* inputState);
-
-// Clear all input state (e.g. to reset after processing).
-GAME_TEST_API bool GameTest_InputState_Clear(GameTest_InputState* inputState);

@@ -13,7 +13,11 @@ option(GAME_TEST_BUILD_EXAMPLES "Build examples"            ON)
 # ---------------------------------------------------------------------------
 # Library target
 # ---------------------------------------------------------------------------
-file(GLOB GAME_TEST_SOURCES "src/*.c")
+if(WIN32)
+    file(GLOB GAME_TEST_SOURCES "src/*.c")
+else()
+    message(FATAL_ERROR "GameTest: platform not supported (only Win32 is implemented).")
+endif()
 
 if(GAME_TEST_BUILD_SHARED)
     add_library(GameTest SHARED ${GAME_TEST_SOURCES})
