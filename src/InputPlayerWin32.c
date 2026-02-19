@@ -35,6 +35,11 @@ static HANDLE s_hookThread = NULL;
 static DWORD s_hookThreadId = 0;
 static HANDLE s_hookReadyEvent = NULL;
 static GameTest_InputState s_prevState;
+static GameTest_InputPlayer_ModeBits s_mode = 0;
+static int s_currentFrame = 0;
+static int s_totalFrames = 0;
+static int s_loopCount = 0;
+static int s_direction = 1; /* +1 = forward, -1 = reverse */
 
 // ---------------------------------------------------------------------------
 // Low-level hooks – block all real input, pass through our injected events
@@ -146,74 +151,80 @@ static void InjectMouseScroll(float deltaX, float deltaY) {
 // ---------------------------------------------------------------------------
 static void SynthesizeFrame(const GameTest_InputState* prev,
                             const GameTest_InputState* next) {
-  /* Mouse movement ----------------------------------------------------- */
-  if (next->mouseX != prev->mouseX || next->mouseY != prev->mouseY)
-    InjectMouseMove(next->mouseX, next->mouseY);
+  /* Mouse movement and scroll ----------------------------------------- */
+  if (!(s_mode & GameTest_InputPlayer_Mode_NO_MOUSE)) {
+    if (next->mouseX != prev->mouseX || next->mouseY != prev->mouseY)
+      InjectMouseMove(next->mouseX, next->mouseY);
+    InjectMouseScroll(next->scrollDeltaX, next->scrollDeltaY);
+  }
 
   /* Mouse buttons ------------------------------------------------------ */
-  const GameTest_ButtonBits added = (GameTest_ButtonBits)(next->buttonsDownBits & ~prev->buttonsDownBits);
-  const GameTest_ButtonBits removed = (GameTest_ButtonBits)(prev->buttonsDownBits & ~next->buttonsDownBits);
+  if (!(s_mode & GameTest_InputPlayer_Mode_NO_BUTTONS)) {
+    const GameTest_ButtonBits added = (GameTest_ButtonBits)(next->buttonsDownBits & ~prev->buttonsDownBits);
+    const GameTest_ButtonBits removed = (GameTest_ButtonBits)(prev->buttonsDownBits & ~next->buttonsDownBits);
 
 #define HANDLE_BUTTON(bit, downF, upF)                        \
   if (added & (bit)) InjectMouseButton((downF), (upF), true); \
   if (removed & (bit)) InjectMouseButton((downF), (upF), false)
 
-  HANDLE_BUTTON(GameTest_Button_LEFT, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
-  HANDLE_BUTTON(GameTest_Button_RIGHT, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP);
-  HANDLE_BUTTON(GameTest_Button_MIDDLE, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP);
+    HANDLE_BUTTON(GameTest_Button_LEFT, MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP);
+    HANDLE_BUTTON(GameTest_Button_RIGHT, MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP);
+    HANDLE_BUTTON(GameTest_Button_MIDDLE, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP);
 #undef HANDLE_BUTTON
 
-  /* XBUTTON1 / XBUTTON2 require mouseData to identify the button. */
-  if ((added | removed) & (GameTest_Button_EXTRA1 | GameTest_Button_EXTRA2)) {
-    INPUT inp = {0};
-    inp.type = INPUT_MOUSE;
-    inp.mi.dwExtraInfo = PLAYER_SENTINEL;
+    /* XBUTTON1 / XBUTTON2 require mouseData to identify the button. */
+    if ((added | removed) & (GameTest_Button_EXTRA1 | GameTest_Button_EXTRA2)) {
+      INPUT inp = {0};
+      inp.type = INPUT_MOUSE;
+      inp.mi.dwExtraInfo = PLAYER_SENTINEL;
 
-    if (added & GameTest_Button_EXTRA1) {
-      inp.mi.mouseData = XBUTTON1;
-      inp.mi.dwFlags = MOUSEEVENTF_XDOWN;
-      SendInput(1, &inp, (int)sizeof(INPUT));
-    }
-    if (removed & GameTest_Button_EXTRA1) {
-      inp.mi.mouseData = XBUTTON1;
-      inp.mi.dwFlags = MOUSEEVENTF_XUP;
-      SendInput(1, &inp, (int)sizeof(INPUT));
-    }
-    if (added & GameTest_Button_EXTRA2) {
-      inp.mi.mouseData = XBUTTON2;
-      inp.mi.dwFlags = MOUSEEVENTF_XDOWN;
-      SendInput(1, &inp, (int)sizeof(INPUT));
-    }
-    if (removed & GameTest_Button_EXTRA2) {
-      inp.mi.mouseData = XBUTTON2;
-      inp.mi.dwFlags = MOUSEEVENTF_XUP;
-      SendInput(1, &inp, (int)sizeof(INPUT));
+      if (added & GameTest_Button_EXTRA1) {
+        inp.mi.mouseData = XBUTTON1;
+        inp.mi.dwFlags = MOUSEEVENTF_XDOWN;
+        SendInput(1, &inp, (int)sizeof(INPUT));
+      }
+      if (removed & GameTest_Button_EXTRA1) {
+        inp.mi.mouseData = XBUTTON1;
+        inp.mi.dwFlags = MOUSEEVENTF_XUP;
+        SendInput(1, &inp, (int)sizeof(INPUT));
+      }
+      if (added & GameTest_Button_EXTRA2) {
+        inp.mi.mouseData = XBUTTON2;
+        inp.mi.dwFlags = MOUSEEVENTF_XDOWN;
+        SendInput(1, &inp, (int)sizeof(INPUT));
+      }
+      if (removed & GameTest_Button_EXTRA2) {
+        inp.mi.mouseData = XBUTTON2;
+        inp.mi.dwFlags = MOUSEEVENTF_XUP;
+        SendInput(1, &inp, (int)sizeof(INPUT));
+      }
     }
   }
 
-  /* Scroll ------------------------------------------------------------- */
-  InjectMouseScroll(next->scrollDeltaX, next->scrollDeltaY);
-
   /* Keyboard key transitions + repeats --------------------------------- */
-  for (int key = 0; key < GameTest_Key_MAX; key++) {
-    const UINT vk = s_keyToVK[key];
-    const bool wasDown = prev->keys[key].isDown != 0;
-    const bool isDown = next->keys[key].isDown != 0;
+  if (!(s_mode & GameTest_InputPlayer_Mode_NO_KEYS)) {
+    for (int key = 0; key < GameTest_Key_MAX; key++) {
+      const UINT vk = s_keyToVK[key];
+      const bool wasDown = prev->keys[key].isDown != 0;
+      const bool isDown = next->keys[key].isDown != 0;
 
-    if (!wasDown && isDown) {
-      InjectKeyDown(vk);
-    } else if (wasDown && !isDown) {
-      InjectKeyUp(vk);
-    } else if (isDown && next->keys[key].repeatCount > 0) {
-      /* Key is held – inject the recorded number of repeat events. */
-      for (uint8_t r = 0; r < next->keys[key].repeatCount; r++)
+      if (!wasDown && isDown) {
         InjectKeyDown(vk);
+      } else if (wasDown && !isDown) {
+        InjectKeyUp(vk);
+      } else if (isDown && next->keys[key].repeatCount > 0) {
+        /* Key is held – inject the recorded number of repeat events. */
+        for (uint8_t r = 0; r < next->keys[key].repeatCount; r++)
+          InjectKeyDown(vk);
+      }
     }
   }
 
   /* Text / Unicode input ----------------------------------------------- */
-  for (size_t i = 0; i < next->textInputCount; i++)
-    InjectUnicodeChar(next->textInput[i]);
+  if (!(s_mode & GameTest_InputPlayer_Mode_NO_TEXT)) {
+    for (size_t i = 0; i < next->textInputCount; i++)
+      InjectUnicodeChar(next->textInput[i]);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -248,12 +259,49 @@ static DWORD WINAPI PlayerHookThreadProc(LPVOID unused) {
 // Public API
 // ---------------------------------------------------------------------------
 
-GAME_TEST_API bool GameTest_InputPlayer_Start(const char* filename) {
+GAME_TEST_API bool GameTest_InputPlayer_Start(const char* filename, GameTest_InputPlayer_ModeBits mode) {
   if (s_playing) return false;
   if (!filename) return false;
 
   s_file = fopen(filename, "rb");
   if (!s_file) return false;
+
+  /* Calculate total number of frames from file size. */
+  if (fseek(s_file, 0, SEEK_END) != 0) {
+    fclose(s_file);
+    s_file = NULL;
+    return false;
+  }
+  long fileSize = ftell(s_file);
+  if (fileSize < 0 || fileSize % (long)sizeof(GameTest_InputState) != 0) {
+    fclose(s_file);
+    s_file = NULL;
+    return false;
+  }
+  s_totalFrames = (int)(fileSize / (long)sizeof(GameTest_InputState));
+  if (s_totalFrames == 0) {
+    fclose(s_file);
+    s_file = NULL;
+    return false;
+  }
+  rewind(s_file);
+
+  s_mode = mode;
+  s_loopCount = 0;
+
+  /* Determine initial playback direction and starting frame.
+     PING_PONG always starts at frame 0 going forward.
+     REVERSE only takes effect when REPEAT is also set. */
+  if (mode & GameTest_InputPlayer_Mode_PING_PONG) {
+    s_direction = 1;
+    s_currentFrame = 0;
+  } else if ((mode & GameTest_InputPlayer_Mode_REVERSE) && (mode & GameTest_InputPlayer_Mode_REPEAT)) {
+    s_direction = -1;
+    s_currentFrame = s_totalFrames - 1;
+  } else {
+    s_direction = 1;
+    s_currentFrame = 0;
+  }
 
   memset(&s_prevState, 0, sizeof(s_prevState));
 
@@ -330,15 +378,73 @@ GAME_TEST_API bool GameTest_InputPlayer_Update(void) {
   if (!s_playing) return false;
 
   /* The hook thread drives its own message loop – no pump needed here.
-     Just read the next recorded frame and inject it. */
+     Seek to the current frame and inject it. */
+  if (fseek(s_file, (long)s_currentFrame * (long)sizeof(GameTest_InputState), SEEK_SET) != 0) {
+    GameTest_InputPlayer_Stop();
+    return false;
+  }
+
   GameTest_InputState nextState;
   if (fread(&nextState, sizeof(nextState), 1, s_file) != 1) {
-    /* End of file or read error – stop playback automatically. */
     GameTest_InputPlayer_Stop();
     return false;
   }
 
   SynthesizeFrame(&s_prevState, &nextState);
   s_prevState = nextState;
+
+  /* Advance frame index according to direction. */
+  int nextFrame = s_currentFrame + s_direction;
+
+  if (nextFrame >= s_totalFrames) {
+    /* Went past the end (forward direction). */
+    if (s_mode & GameTest_InputPlayer_Mode_PING_PONG) {
+      /* Bounce: reverse direction, skip the last frame to avoid replaying it. */
+      s_direction = -1;
+      nextFrame = s_totalFrames - 2;
+      if (nextFrame < 0) nextFrame = 0;
+    } else if (s_mode & GameTest_InputPlayer_Mode_REPEAT) {
+      nextFrame = 0;
+      s_loopCount++;
+    } else {
+      /* End of file with no looping – stop. */
+      GameTest_InputPlayer_Stop();
+      return false;
+    }
+  } else if (nextFrame < 0) {
+    /* Went past the beginning (reverse direction). */
+    if (s_mode & GameTest_InputPlayer_Mode_PING_PONG) {
+      /* Bounce: reverse direction, skip the first frame to avoid replaying it. */
+      s_direction = 1;
+      nextFrame = 1;
+      if (nextFrame >= s_totalFrames) nextFrame = 0;
+      s_loopCount++;
+    } else if (s_mode & GameTest_InputPlayer_Mode_REPEAT) {
+      /* REVERSE+REPEAT: loop back to the last frame. */
+      nextFrame = s_totalFrames - 1;
+      s_loopCount++;
+    } else {
+      GameTest_InputPlayer_Stop();
+      return false;
+    }
+  }
+
+  s_currentFrame = nextFrame;
   return true;
+}
+
+GAME_TEST_API bool GameTest_InputPlayer_IsPlaying(void) {
+  return s_playing;
+}
+
+GAME_TEST_API int GameTest_InputPlayer_GetCurrentFrame(void) {
+  return s_file ? s_currentFrame : -1;
+}
+
+GAME_TEST_API int GameTest_InputPlayer_GetTotalFrames(void) {
+  return s_file ? s_totalFrames : -1;
+}
+
+GAME_TEST_API int GameTest_InputPlayer_GetCurrentLoopCount(void) {
+  return s_file ? s_loopCount : -1;
 }
