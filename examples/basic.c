@@ -26,15 +26,14 @@ SOFTWARE.
 #include "GameTest.h"
 
 int main(void) {
-  // int hits = 7;
-  // int multiplier = 3;
-  // int score = GameTest_Score(hits, multiplier);
+  if (!GameTest_InputRecorder_OpenWindow()) {
+    fprintf(stderr, "Failed to open input recorder window.\n");
+    return 1;
+  }
 
-  // printf("game_test_score(%d, %d) = %d\n", hits, multiplier, score);
-
-  // /* Invalid input example */
-  // int bad = GameTest_Score(-1, 2);
-  // printf("game_test_score(-1, 2) = %d  (expected -1)\n", bad);
+  while (true) {
+    GameTest_InputRecorder_Update();
+  }
 
   return 0;
 }

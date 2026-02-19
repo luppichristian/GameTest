@@ -23,8 +23,8 @@ SOFTWARE.
 */
 
 #include <string.h>
-#include <commdlg.h>
 #include "UtilityWin32.h"
+#include <commdlg.h>
 #include "GameTest/InputRecorder.h"
 
 static FILE* s_file = NULL;
@@ -50,6 +50,10 @@ static volatile bool s_paused = false;
 static char s_wndFilename[MAX_PATH] = "recording.gtrec";
 static HWND s_uiHwnd = NULL;
 static HANDLE s_uiThread = NULL;
+static HICON s_uiIcon = NULL;
+/* Manual tooltip */
+static HWND s_ttWnd = NULL; /* floating label window       */
+static int s_ttBtn = -1;    /* button tip is pending/shown for */
 
 // ---------------------------------------------------------------------------
 // Low-level keyboard hook
@@ -220,7 +224,9 @@ static DWORD WINAPI RecorderHookThreadProc(LPVOID unused) {
 #define GT_BTN_SIZE   48
 #define GT_BTN_MARGIN 8
 #define GT_BTN_BORDER 6
-#define GT_BTN_COUNT  3
+#define GT_BTN_COUNT  5
+#define GT_TT_TIMER   42
+#define GT_TT_DELAY   450
 
 /* Total window client size */
 #define GT_WND_W (GT_BTN_BORDER * 2 + GT_BTN_COUNT * (GT_BTN_SIZE + GT_BTN_MARGIN) + GT_BTN_MARGIN)
@@ -246,81 +252,365 @@ static RECT BtnRect(int idx) {
   return r;
 }
 
-/* Draw record (circle) or stop (square) icon */
-static void DrawRecordStopIcon(HDC hdc, RECT r, bool isRecording) {
-  int pad = 11;
-  if (isRecording) {
-    HBRUSH br = CreateSolidBrush(s_cRed);
-    RECT sq = {r.left + pad, r.top + pad, r.right - pad, r.bottom - pad};
-    FillRect(hdc, &sq, br);
-    DeleteObject(br);
-  } else {
-    HBRUSH br = CreateSolidBrush(s_cRed);
-    HPEN pen = CreatePen(PS_NULL, 0, 0);
-    SelectObject(hdc, br);
-    SelectObject(hdc, pen);
-    Ellipse(hdc, r.left + pad, r.top + pad, r.right - pad, r.bottom - pad);
-    SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    SelectObject(hdc, GetStockObject(NULL_PEN));
-    DeleteObject(br);
-    DeleteObject(pen);
-  }
+/* ---------------------------------------------------------------------------
+   Icon rendering helpers
+   Each icon is drawn at GT_SS× resolution into a memory DC, then
+   StretchBlt'd back with HALFTONE mode to produce smooth anti-aliased edges.
+   --------------------------------------------------------------------------- */
+
+#define GT_SS 4 /* supersampling factor */
+
+/* Null-pen / null-brush helpers */
+static HPEN s_nullPen = NULL;
+static HBRUSH s_nullBrush = NULL;
+
+static void SS_Pen(HDC dc) {
+  SelectObject(dc, s_nullPen);
+}
+static void SS_Brush(HDC dc) {
+  SelectObject(dc, s_nullBrush);
 }
 
-/* Draw pause (two bars) or resume (triangle) icon */
-static void DrawPauseResumeIcon(HDC hdc, RECT r, bool isPaused, bool enabled) {
-  COLORREF col = enabled ? s_cYellow : s_cDisabled;
-  int pad = 11;
-  int cy = (r.top + r.bottom) / 2;
-  if (isPaused) {
-    /* Resume: right-pointing triangle */
-    HBRUSH br = CreateSolidBrush(col);
-    HPEN pen = CreatePen(PS_NULL, 0, 0);
-    SelectObject(hdc, br);
-    SelectObject(hdc, pen);
-    POINT pts[3] = {
-        {     r.left + pad,    r.top + pad},
-        {     r.left + pad, r.bottom - pad},
-        {r.right - pad + 1,             cy}
-    };
-    Polygon(hdc, pts, 3);
-    SelectObject(hdc, GetStockObject(NULL_BRUSH));
-    SelectObject(hdc, GetStockObject(NULL_PEN));
-    DeleteObject(br);
-    DeleteObject(pen);
-  } else {
-    /* Pause: two vertical bars */
-    HBRUSH br = CreateSolidBrush(col);
-    int barW = (r.right - r.left - pad * 2 - 4) / 2;
-    RECT b1 = {r.left + pad, r.top + pad, r.left + pad + barW, r.bottom - pad};
-    RECT b2 = {r.right - pad - barW, r.top + pad, r.right - pad, r.bottom - pad};
-    FillRect(hdc, &b1, br);
-    FillRect(hdc, &b2, br);
-    DeleteObject(br);
-  }
-}
-
-/* Draw folder icon for "select output name" */
-static void DrawFolderIcon(HDC hdc, RECT r) {
-  int pad = 10;
-  int cx = (r.left + r.right) / 2;
-  int cy = (r.top + r.bottom) / 2;
-  HBRUSH br = CreateSolidBrush(s_cIcon);
-  HPEN pen = CreatePen(PS_NULL, 0, 0);
-  SelectObject(hdc, br);
-  SelectObject(hdc, pen);
-  /* Body */
-  RECT body = {r.left + pad, cy - 4, r.right - pad, r.bottom - pad};
-  FillRect(hdc, &body, br);
-  /* Tab */
-  RECT tab = {r.left + pad, r.top + pad + 4, cx, cy - 4};
-  FillRect(hdc, &tab, br);
-  SelectObject(hdc, GetStockObject(NULL_BRUSH));
-  SelectObject(hdc, GetStockObject(NULL_PEN));
+/* Draw icon at 4× scale into memDc (sz×sz), filled with bgCol already. */
+static void IconRecord(HDC dc, int sz, COLORREF col) {
+  int m = sz * 20 / 100;
+  HBRUSH br = CreateSolidBrush(col);
+  SelectObject(dc, br);
+  SS_Pen(dc);
+  Ellipse(dc, m, m, sz - m, sz - m);
+  SS_Brush(dc);
   DeleteObject(br);
+}
+
+static void IconStop(HDC dc, int sz, COLORREF col) {
+  int m = sz * 25 / 100;
+  int rr = sz * 10 / 100;
+  HBRUSH br = CreateSolidBrush(col);
+  SelectObject(dc, br);
+  SS_Pen(dc);
+  RoundRect(dc, m, m, sz - m, sz - m, rr, rr);
+  SS_Brush(dc);
+  DeleteObject(br);
+}
+
+static void IconPause(HDC dc, int sz, COLORREF col) {
+  int padH = sz * 22 / 100;
+  int padV = sz * 20 / 100;
+  int gap = sz * 13 / 100;
+  int barW = (sz - 2 * padH - gap) / 2;
+  int rr = sz * 8 / 100;
+  HBRUSH br = CreateSolidBrush(col);
+  SelectObject(dc, br);
+  SS_Pen(dc);
+  RoundRect(dc, padH, padV, padH + barW, sz - padV, rr, rr);
+  RoundRect(dc, sz - padH - barW, padV, sz - padH, sz - padV, rr, rr);
+  SS_Brush(dc);
+  DeleteObject(br);
+}
+
+static void IconPlay(HDC dc, int sz, COLORREF col) {
+  int padV = sz * 18 / 100;
+  int padL = sz * 22 / 100;
+  int padR = sz * 16 / 100;
+  HBRUSH br = CreateSolidBrush(col);
+  SelectObject(dc, br);
+  SS_Pen(dc);
+  POINT pts[3] = {
+      {     padL,      padV},
+      {     padL, sz - padV},
+      {sz - padR,    sz / 2},
+  };
+  Polygon(dc, pts, 3);
+  SS_Brush(dc);
+  DeleteObject(br);
+}
+
+static void IconFolder(HDC dc, int sz, COLORREF col) {
+  int padH = sz * 14 / 100;
+  int padVb = sz * 16 / 100;
+  int tabT = sz * 20 / 100;
+  int split = sz * 45 / 100; /* y where tab meets body */
+  int tabW = sz * 44 / 100;
+  int tabSlant = sz * 6 / 100;
+  int rr = sz * 6 / 100;
+  HBRUSH br = CreateSolidBrush(col);
+  SelectObject(dc, br);
+  SS_Pen(dc);
+  /* Body */
+  RoundRect(dc, padH, split, sz - padH, sz - padVb, rr, rr);
+  /* Tab (trapezoid: slanted right edge) */
+  POINT tab[4] = {
+      {                  padH, split},
+      {                  padH,  tabT},
+      {padH + tabW - tabSlant,  tabT},
+      {           padH + tabW, split},
+  };
+  Polygon(dc, tab, 4);
+  SS_Brush(dc);
+  DeleteObject(br);
+}
+
+static void IconTrash(HDC dc, int sz, COLORREF col, COLORREF bgCol) {
+  int padH = sz * 18 / 100;
+  int lidT = sz * 22 / 100;
+  int lidB = sz * 34 / 100;
+  int bodyT = sz * 37 / 100;
+  int bodyB = sz * 84 / 100;
+  int bodyPad = sz * 22 / 100;
+  int cx = sz / 2;
+  int hndW = sz * 20 / 100;
+  int hndT = sz * 12 / 100;
+  int rr = sz * 7 / 100;
+  int rrSm = sz * 12 / 100;
+
+  HBRUSH br = CreateSolidBrush(col);
+  HBRUSH bgBr = CreateSolidBrush(bgCol);
+  SelectObject(dc, br);
+  SS_Pen(dc);
+
+  /* Handle arc (small rounded rect at top-center) */
+  RoundRect(dc, cx - hndW / 2, hndT, cx + hndW / 2, lidT, rrSm, rrSm);
+  /* Lid */
+  RoundRect(dc, padH, lidT, sz - padH, lidB, rr, rr);
+  /* Body */
+  RoundRect(dc, bodyPad, bodyT, sz - bodyPad, bodyB, rr, rr);
+
+  /* Three vertical slits in body (cut with bg color) */
+  SelectObject(dc, bgBr);
+  int slitW = sz * 5 / 100;
+  int slitT = bodyT + sz * 8 / 100;
+  int slitB = bodyB - sz * 8 / 100;
+  int innerW = sz - 2 * bodyPad - 2 * rr;
+  int step = innerW / 4;
+  for (int i = 1; i <= 3; i++) {
+    int lx = bodyPad + rr + i * step - slitW / 2;
+    RECT lr = {lx, slitT, lx + slitW, slitB};
+    FillRect(dc, &lr, bgBr);
+  }
+
+  SS_Brush(dc);
+  DeleteObject(br);
+  DeleteObject(bgBr);
+}
+
+/* Blit an icon drawn by `drawFn` onto `destHdc` at rect `r`, supersampled. */
+typedef void (*IconFn)(HDC, int, void*);
+
+static void BlitIcon(HDC destHdc, RECT r, COLORREF bgCol, IconFn fn, void* ctx) {
+  int sz = GT_BTN_SIZE * GT_SS;
+  HDC memDc = CreateCompatibleDC(destHdc);
+  HBITMAP bmp = CreateCompatibleBitmap(destHdc, sz, sz);
+  HGDIOBJ oldBmp = SelectObject(memDc, bmp);
+
+  /* Pre-fill with button background so edges blend correctly */
+  HBRUSH bgBr = CreateSolidBrush(bgCol);
+  RECT fill = {0, 0, sz, sz};
+  FillRect(memDc, &fill, bgBr);
+  DeleteObject(bgBr);
+
+  /* Ensure null objects are ready */
+  if (!s_nullPen) s_nullPen = CreatePen(PS_NULL, 0, 0);
+  if (!s_nullBrush) s_nullBrush = (HBRUSH)GetStockObject(NULL_BRUSH);
+
+  fn(memDc, sz, ctx);
+
+  /* Downsample with HALFTONE for anti-aliasing */
+  SetStretchBltMode(destHdc, HALFTONE);
+  SetBrushOrgEx(destHdc, 0, 0, NULL);
+  StretchBlt(destHdc, r.left, r.top, GT_BTN_SIZE, GT_BTN_SIZE, memDc, 0, 0, sz, sz, SRCCOPY);
+
+  SelectObject(memDc, oldBmp);
+  DeleteObject(bmp);
+  DeleteDC(memDc);
+}
+
+/* Context structs passed through BlitIcon's void* */
+typedef struct {
+  bool state;
+  COLORREF col;
+  COLORREF bg;
+} IconCtxBool;
+
+static void CB_Record(HDC dc, int sz, void* ctx) {
+  IconCtxBool* c = (IconCtxBool*)ctx;
+  if (c->state) IconStop(dc, sz, c->col);
+  else
+    IconRecord(dc, sz, c->col);
+}
+static void CB_PauseResume(HDC dc, int sz, void* ctx) {
+  IconCtxBool* c = (IconCtxBool*)ctx;
+  if (c->state) IconPlay(dc, sz, c->col);
+  else
+    IconPause(dc, sz, c->col);
+}
+static void CB_Folder(HDC dc, int sz, void* ctx) {
+  IconCtxBool* c = (IconCtxBool*)ctx;
+  IconFolder(dc, sz, c->col);
+}
+static void CB_Trash(HDC dc, int sz, void* ctx) {
+  IconCtxBool* c = (IconCtxBool*)ctx;
+  IconTrash(dc, sz, c->col, c->bg);
+}
+
+/* Legacy thin wrappers – kept so call sites in PaintRecorderWindow compile */
+static void DrawRecordStopIcon(HDC hdc, RECT r, bool isRecording, COLORREF bg) {
+  IconCtxBool ctx = {isRecording, s_cRed, bg};
+  BlitIcon(hdc, r, bg, CB_Record, &ctx);
+}
+static void DrawPauseResumeIcon(HDC hdc, RECT r, bool isPaused, bool enabled, COLORREF bg) {
+  COLORREF col = enabled ? s_cYellow : s_cDisabled;
+  IconCtxBool ctx = {isPaused, col, bg};
+  BlitIcon(hdc, r, bg, CB_PauseResume, &ctx);
+}
+static void DrawFolderIcon(HDC hdc, RECT r, COLORREF bg) {
+  IconCtxBool ctx = {false, s_cIcon, bg};
+  BlitIcon(hdc, r, bg, CB_Folder, &ctx);
+}
+static void DrawDeleteIcon(HDC hdc, RECT r, bool enabled, COLORREF bg) {
+  COLORREF col = enabled ? RGB(220, 70, 70) : s_cDisabled;
+  IconCtxBool ctx = {false, col, bg};
+  BlitIcon(hdc, r, bg, CB_Trash, &ctx);
+}
+static void IconClose(HDC dc, int sz, COLORREF col, COLORREF bgCol) {
+  /* Two diagonal rounded bars forming an × */
+  int m = sz * 20 / 100; /* margin from edge  */
+  int hw = sz * 8 / 100; /* half-width of bar */
+  HBRUSH br = CreateSolidBrush(col);
+  HBRUSH bgBr = CreateSolidBrush(bgCol);
+  HPEN pen = CreatePen(PS_NULL, 0, 0);
+  SelectObject(dc, br);
+  SelectObject(dc, pen);
+  /* Draw a filled square rotated 45° approximation via polygon pair */
+  /* Bar 1: top-left → bottom-right */
+  POINT b1[4] = {
+      {          m,      m + hw},
+      {     m + hw,           m},
+      {     sz - m, sz - m - hw},
+      {sz - m - hw,      sz - m},
+  };
+  Polygon(dc, b1, 4);
+  /* Bar 2: top-right → bottom-left */
+  POINT b2[4] = {
+      {sz - m - hw,           m},
+      {     sz - m,      m + hw},
+      {     m + hw,      sz - m},
+      {          m, sz - m - hw},
+  };
+  Polygon(dc, b2, 4);
+  SelectObject(dc, GetStockObject(NULL_BRUSH));
+  SelectObject(dc, GetStockObject(NULL_PEN));
+  DeleteObject(br);
+  DeleteObject(bgBr);
   DeleteObject(pen);
 }
+static void CB_Close(HDC dc, int sz, void* ctx) {
+  IconCtxBool* c = (IconCtxBool*)ctx;
+  IconClose(dc, sz, c->col, c->bg);
+}
+static void DrawCloseIcon(HDC hdc, RECT r, COLORREF bg) {
+  IconCtxBool ctx = {false, RGB(180, 180, 180), bg};
+  BlitIcon(hdc, r, bg, CB_Close, &ctx);
+}
 
+/* ---------------------------------------------------------------------------
+   Manual tooltip
+   --------------------------------------------------------------------------- */
+
+static const WCHAR* GetTipText(int btn) {
+  if (btn == 0) return s_recording ? L"Stop" : L"Record";
+  if (btn == 1) return s_paused ? L"Resume" : L"Pause";
+  if (btn == 2) return L"Select output file";
+  if (btn == 3) return L"Delete output file";
+  if (btn == 4) return L"Close";
+  return NULL;
+}
+
+static LRESULT CALLBACK TipWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
+  if (msg == WM_PAINT) {
+    PAINTSTRUCT ps;
+    HDC hdc = BeginPaint(hwnd, &ps);
+    RECT cr;
+    GetClientRect(hwnd, &cr);
+    /* background */
+    HBRUSH bg = CreateSolidBrush(RGB(44, 44, 44));
+    FillRect(hdc, &cr, bg);
+    DeleteObject(bg);
+    /* border */
+    HPEN pen = CreatePen(PS_SOLID, 1, RGB(110, 110, 110));
+    HGDIOBJ op = SelectObject(hdc, pen);
+    SelectObject(hdc, GetStockObject(NULL_BRUSH));
+    Rectangle(hdc, cr.left, cr.top, cr.right - 1, cr.bottom - 1);
+    SelectObject(hdc, op);
+    DeleteObject(pen);
+    /* text */
+    SetBkMode(hdc, TRANSPARENT);
+    SetTextColor(hdc, RGB(220, 220, 220));
+    HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+    HGDIOBJ of = SelectObject(hdc, font);
+    WCHAR buf[64];
+    GetWindowTextW(hwnd, buf, 64);
+    RECT tr = {cr.left + 7, cr.top + 4, cr.right - 7, cr.bottom - 4};
+    DrawTextW(hdc, buf, -1, &tr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(hdc, of);
+    EndPaint(hwnd, &ps);
+    return 0;
+  }
+  return DefWindowProcW(hwnd, msg, wp, lp);
+}
+
+static void EnsureTipClass(void) {
+  WNDCLASSEXW wc = {0};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = TipWndProc;
+  wc.hInstance = GetModuleHandleW(NULL);
+  wc.hbrBackground = NULL;
+  wc.lpszClassName = L"GameTest_Tip";
+  RegisterClassExW(&wc); /* silently fails if already registered */
+}
+
+static void ShowTip(HWND parent, int btn) {
+  const WCHAR* text = GetTipText(btn);
+  if (!text) return;
+  EnsureTipClass();
+  if (!s_ttWnd) {
+    s_ttWnd = CreateWindowExW(
+        WS_EX_TOPMOST | WS_EX_NOACTIVATE,
+        L"GameTest_Tip",
+        text,
+        WS_POPUP,
+        0,
+        0,
+        10,
+        10,
+        parent,
+        NULL,
+        GetModuleHandleW(NULL),
+        NULL);
+    if (!s_ttWnd) return;
+  } else {
+    SetWindowTextW(s_ttWnd, text);
+  }
+  /* Measure text width with the stock GUI font */
+  HDC hdc = GetDC(s_ttWnd);
+  HFONT font = (HFONT)GetStockObject(DEFAULT_GUI_FONT);
+  HGDIOBJ of = SelectObject(hdc, font);
+  SIZE sz = {0};
+  GetTextExtentPoint32W(hdc, text, (int)wcslen(text), &sz);
+  SelectObject(hdc, of);
+  ReleaseDC(s_ttWnd, hdc);
+  int w = sz.cx + 16;
+  int h = sz.cy + 10;
+  POINT pt;
+  GetCursorPos(&pt);
+  SetWindowPos(s_ttWnd, HWND_TOPMOST, pt.x + 14, pt.y + 20, w, h, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  InvalidateRect(s_ttWnd, NULL, FALSE);
+}
+
+static void HideTip(HWND parent) {
+  (void)parent;
+  if (s_ttWnd) ShowWindow(s_ttWnd, SW_HIDE);
+  s_ttBtn = -1;
+}
 static void PaintRecorderWindow(HWND hwnd) {
   PAINTSTRUCT ps;
   HDC hdc = BeginPaint(hwnd, &ps);
@@ -339,7 +629,8 @@ static void PaintRecorderWindow(HWND hwnd) {
     RECT br = BtnRect(i);
 
     /* Button fill */
-    HBRUSH btnBr = CreateSolidBrush((s_hotBtn == i) ? s_cBtnHover : s_cBtnNorm);
+    COLORREF btnBg = (s_hotBtn == i) ? s_cBtnHover : s_cBtnNorm;
+    HBRUSH btnBr = CreateSolidBrush(btnBg);
     FillRect(hdc, &br, btnBr);
     DeleteObject(btnBr);
 
@@ -353,11 +644,15 @@ static void PaintRecorderWindow(HWND hwnd) {
     DeleteObject(borderPen);
 
     /* Icon */
-    if (i == 0) DrawRecordStopIcon(hdc, br, rec);
+    if (i == 0) DrawRecordStopIcon(hdc, br, rec, btnBg);
     else if (i == 1)
-      DrawPauseResumeIcon(hdc, br, paused, rec);
+      DrawPauseResumeIcon(hdc, br, paused, rec, btnBg);
+    else if (i == 2)
+      DrawFolderIcon(hdc, br, btnBg);
+    else if (i == 3)
+      DrawDeleteIcon(hdc, br, !s_recording, btnBg);
     else
-      DrawFolderIcon(hdc, br);
+      DrawCloseIcon(hdc, br, btnBg);
   }
 
   EndPaint(hwnd, &ps);
@@ -379,9 +674,15 @@ static LRESULT CALLBACK RecorderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
       return 0;
 
     case WM_NCHITTEST: {
-      /* Let the background act as a caption so the user can drag the window */
+      /* Let the background act as a caption for dragging,
+         but let button areas receive normal client-area clicks. */
       LRESULT hit = DefWindowProcW(hwnd, msg, wParam, lParam);
-      if (hit == HTCLIENT) return HTCAPTION;
+      if (hit == HTCLIENT) {
+        POINT pt = {(int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam)};
+        ScreenToClient(hwnd, &pt);
+        if (HitTestBtn(pt.x, pt.y) >= 0) return HTCLIENT;
+        return HTCAPTION;
+      }
       return hit;
     }
 
@@ -391,6 +692,13 @@ static LRESULT CALLBACK RecorderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
       int prev = s_hotBtn;
       s_hotBtn = HitTestBtn(x, y);
       if (s_hotBtn != prev) {
+        /* Button changed: cancel any pending/shown tip, restart timer */
+        KillTimer(hwnd, GT_TT_TIMER);
+        HideTip(hwnd);
+        if (s_hotBtn >= 0) {
+          s_ttBtn = s_hotBtn;
+          SetTimer(hwnd, GT_TT_TIMER, GT_TT_DELAY, NULL);
+        }
         TRACKMOUSEEVENT tme = {sizeof(tme), TME_LEAVE, hwnd, 0};
         TrackMouseEvent(&tme);
         InvalidateRect(hwnd, NULL, FALSE);
@@ -398,12 +706,24 @@ static LRESULT CALLBACK RecorderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
       return 0;
     }
 
+    case WM_TIMER:
+      if (wParam == GT_TT_TIMER) {
+        KillTimer(hwnd, GT_TT_TIMER);
+        if (s_ttBtn >= 0) ShowTip(hwnd, s_ttBtn);
+        return 0;
+      }
+      break;
+
     case WM_MOUSELEAVE:
+      KillTimer(hwnd, GT_TT_TIMER);
+      HideTip(hwnd);
       s_hotBtn = -1;
       InvalidateRect(hwnd, NULL, FALSE);
       return 0;
 
     case WM_LBUTTONDOWN: {
+      KillTimer(hwnd, GT_TT_TIMER);
+      HideTip(hwnd);
       int x = (int)(short)LOWORD(lParam);
       int y = (int)(short)HIWORD(lParam);
       int btn = HitTestBtn(x, y);
@@ -437,16 +757,80 @@ static LRESULT CALLBACK RecorderWndProc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
         ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST;
         if (GetSaveFileNameW(&ofn)) {
           WideCharToMultiByte(CP_UTF8, 0, wpath, -1, s_wndFilename, MAX_PATH, NULL, NULL);
+          InvalidateRect(hwnd, NULL, FALSE);
         }
+      } else if (btn == 3) {
+        /* Delete output file (only when not recording) */
+        if (!s_recording) {
+          WCHAR wpath[MAX_PATH];
+          MultiByteToWideChar(CP_UTF8, 0, s_wndFilename, -1, wpath, MAX_PATH);
+          WCHAR prompt[MAX_PATH + 64];
+          wsprintfW(prompt, L"Delete file?\n%s", wpath);
+          if (MessageBoxW(hwnd, prompt, L"GameTest Recorder", MB_YESNO | MB_ICONWARNING) == IDYES) {
+            DeleteFileW(wpath);
+          }
+        }
+      } else if (btn == 4) {
+        /* Close */
+        DestroyWindow(hwnd);
       }
       return 0;
     }
 
     case WM_DESTROY:
+      KillTimer(hwnd, GT_TT_TIMER);
+      HideTip(hwnd);
+      if (s_uiIcon) {
+        DestroyIcon(s_uiIcon);
+        s_uiIcon = NULL;
+      }
       PostQuitMessage(0);
       return 0;
   }
   return DefWindowProcW(hwnd, msg, wParam, lParam);
+}
+
+static HICON CreateRecorderIcon(void) {
+  /* Build a 32×32 32-bpp DIB: dark background + red circle */
+  const int SZ = 32;
+  BITMAPV5HEADER bmi = {0};
+  bmi.bV5Size = sizeof(bmi);
+  bmi.bV5Width = SZ;
+  bmi.bV5Height = -SZ; /* top-down */
+  bmi.bV5Planes = 1;
+  bmi.bV5BitCount = 32;
+  bmi.bV5Compression = BI_RGB;
+
+  void* bits = NULL;
+  HDC dc = GetDC(NULL);
+  HBITMAP hColor = CreateDIBSection(dc, (BITMAPINFO*)&bmi, DIB_RGB_COLORS, &bits, NULL, 0);
+  ReleaseDC(NULL, dc);
+  if (!hColor) return NULL;
+
+  DWORD* px = (DWORD*)bits;
+  const DWORD bg = 0xFF1C1C1C;  /* dark background, fully opaque */
+  const DWORD red = 0xFFD23232; /* record red */
+  const float cx = (SZ - 1) / 2.0f;
+  const float r = SZ * 0.30f; /* circle radius */
+
+  for (int y = 0; y < SZ; y++) {
+    for (int x = 0; x < SZ; x++) {
+      float dx = x - cx, dy = y - cx;
+      px[y * SZ + x] = (dx * dx + dy * dy <= r * r) ? red : bg;
+    }
+  }
+
+  /* All-zeros mask = color bitmap is always authoritative */
+  HBITMAP hMask = CreateBitmap(SZ, SZ, 1, 1, NULL);
+
+  ICONINFO ii = {0};
+  ii.fIcon = TRUE;
+  ii.hbmColor = hColor;
+  ii.hbmMask = hMask;
+  HICON hIcon = CreateIconIndirect(&ii);
+  DeleteObject(hColor);
+  DeleteObject(hMask);
+  return hIcon;
 }
 
 static DWORD WINAPI RecorderUIThreadProc(LPVOID unused) {
@@ -457,7 +841,7 @@ static DWORD WINAPI RecorderUIThreadProc(LPVOID unused) {
   wc.style = CS_HREDRAW | CS_VREDRAW;
   wc.lpfnWndProc = RecorderWndProc;
   wc.hInstance = GetModuleHandleW(NULL);
-  wc.hCursor = LoadCursorW(NULL, IDC_ARROW);
+  wc.hCursor = LoadCursorW(NULL, (LPCWSTR)IDC_ARROW);
   wc.hbrBackground = NULL;
   wc.lpszClassName = L"GameTest_RecorderUI";
   RegisterClassExW(&wc);
@@ -480,6 +864,13 @@ static DWORD WINAPI RecorderUIThreadProc(LPVOID unused) {
       GetModuleHandleW(NULL),
       NULL);
   if (!s_uiHwnd) return 1;
+
+  /* Set programmatic icon (visible in Alt-Tab switcher) */
+  s_uiIcon = CreateRecorderIcon();
+  if (s_uiIcon) {
+    SendMessageW(s_uiHwnd, WM_SETICON, ICON_BIG, (LPARAM)s_uiIcon);
+    SendMessageW(s_uiHwnd, WM_SETICON, ICON_SMALL, (LPARAM)s_uiIcon);
+  }
 
   ShowWindow(s_uiHwnd, SW_SHOWNOACTIVATE);
   UpdateWindow(s_uiHwnd);
