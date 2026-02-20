@@ -26,14 +26,5 @@ SOFTWARE.
 #include "GameTest.h"
 
 int main(void) {
-  if (!GameTest_InputRecorder_OpenWindow()) {
-    fprintf(stderr, "Failed to open input recorder window.\n");
-    return 1;
-  }
-
-  while (true) {
-    GameTest_InputRecorder_Update();
-  }
-
   return 0;
 }
