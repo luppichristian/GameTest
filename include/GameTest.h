@@ -73,11 +73,11 @@ typedef void (*GMT_LogCallback)(
     const char* msg,
     GMT_CodeLocation loc);
 
-GMT_API void GMT_Log_(GMT_Severity severity, const char* msg, GMT_CodeLocation loc);  // Internal, use macros below.
+GMT_API void GMT_Log_(GMT_Severity severity, GMT_CodeLocation loc, const char* fmt, ...);  // Internal, use macros below.
 
-#define GMT_LogInfo(msg)    GMT_Log_(GMT_Severity_INFO, msg, GMT_LOCATION())
-#define GMT_LogWarning(msg) GMT_Log_(GMT_Severity_WARNING, msg, GMT_LOCATION())
-#define GMT_LogError(msg)   GMT_Log_(GMT_Severity_ERROR, msg, GMT_LOCATION())
+#define GMT_LogInfo(fmt, ...)    GMT_Log_(GMT_Severity_INFO, GMT_LOCATION(), fmt, ##__VA_ARGS__)
+#define GMT_LogWarning(fmt, ...) GMT_Log_(GMT_Severity_WARNING, GMT_LOCATION(), fmt, ##__VA_ARGS__)
+#define GMT_LogError(fmt, ...)   GMT_Log_(GMT_Severity_ERROR, GMT_LOCATION(), fmt, ##__VA_ARGS__)
 
 // ===== Memory Management =====
 

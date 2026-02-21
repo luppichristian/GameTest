@@ -38,8 +38,8 @@ bool GMT_Record_OpenForWrite(void) {
     }
   }
 
-  GMT_FileHandle fh;
-  if (!GMT_Platform_FileOpenWrite(path, &fh)) {
+  FILE* fh = fopen(path, "wb");
+  if (!fh) {
     GMT_LogError("GMT_Record: failed to open test file for write.");
     return false;
   }
@@ -47,10 +47,9 @@ bool GMT_Record_OpenForWrite(void) {
   GMT_FileHeader hdr;
   hdr.magic = GMT_RECORD_MAGIC;
   hdr.version = GMT_RECORD_VERSION;
-  hdr.reserved = 0;
 
-  if (!GMT_Platform_FileWrite(fh, &hdr, sizeof(hdr))) {
-    GMT_Platform_FileClose(fh);
+  if (fwrite(&hdr, sizeof(hdr), 1, fh) != 1) {
+    fclose(fh);
     GMT_LogError("GMT_Record: failed to write file header.");
     return false;
   }
@@ -60,44 +59,36 @@ bool GMT_Record_OpenForWrite(void) {
 }
 
 void GMT_Record_CloseWrite(void) {
-  if (g_gmt.record_file == GMT_INVALID_FILE_HANDLE) return;
+  if (!g_gmt.record_file) return;
 
   uint8_t end_tag = GMT_RECORD_TAG_END;
-  GMT_Platform_FileWrite(g_gmt.record_file, &end_tag, 1);
-  GMT_Platform_FileClose(g_gmt.record_file);
-  g_gmt.record_file = GMT_INVALID_FILE_HANDLE;
+  fwrite(&end_tag, 1, 1, g_gmt.record_file);
+  fclose(g_gmt.record_file);
+  g_gmt.record_file = NULL;
 }
 
 void GMT_Record_WriteFrame(void) {
-  if (g_gmt.record_file == GMT_INVALID_FILE_HANDLE) return;
+  if (!g_gmt.record_file) return;
 
   GMT_RawFrameRecord rec;
   rec.frame_index = g_gmt.frame_index;
-
-  GMT_Platform_CaptureInput(
-      rec.keys,
-      rec.key_repeats,
-      &rec.mouse_x,
-      &rec.mouse_y,
-      &rec.mouse_wheel_x,
-      &rec.mouse_wheel_y,
-      &rec.mouse_buttons);
+  GMT_Platform_CaptureInput(&rec.input);
 
   uint8_t tag = GMT_RECORD_TAG_FRAME;
-  GMT_Platform_FileWrite(g_gmt.record_file, &tag, 1);
-  GMT_Platform_FileWrite(g_gmt.record_file, &rec, sizeof(rec));
+  fwrite(&tag, 1, 1, g_gmt.record_file);
+  fwrite(&rec, sizeof(rec), 1, g_gmt.record_file);
 }
 
 void GMT_Record_WriteSignal(int32_t signal_id, uint64_t frame_index) {
-  if (g_gmt.record_file == GMT_INVALID_FILE_HANDLE) return;
+  if (!g_gmt.record_file) return;
 
   GMT_RawSignalRecord rec;
   rec.frame_index = frame_index;
   rec.signal_id = signal_id;
 
   uint8_t tag = GMT_RECORD_TAG_SIGNAL;
-  GMT_Platform_FileWrite(g_gmt.record_file, &tag, 1);
-  GMT_Platform_FileWrite(g_gmt.record_file, &rec, sizeof(rec));
+  fwrite(&tag, 1, 1, g_gmt.record_file);
+  fwrite(&rec, sizeof(rec), 1, g_gmt.record_file);
 }
 
 // ===== REPLAY mode =====
@@ -108,17 +99,37 @@ bool GMT_Record_LoadReplay(void) {
     GMT_LogError("GMT_Record: test_path is NULL or empty.");
     return false;
   }
-  if (!GMT_Platform_FileExists(path)) {
+  FILE* f = fopen(path, "rb");
+  if (!f) {
     GMT_LogError("GMT_Record: test file does not exist.");
     return false;
   }
-
-  uint8_t* data = NULL;
-  size_t total = 0;
-  if (!GMT_Platform_FileReadAll(path, &data, &total)) {
+  if (fseek(f, 0, SEEK_END) != 0) {
+    fclose(f);
     GMT_LogError("GMT_Record: failed to read test file.");
     return false;
   }
+  long file_sz = ftell(f);
+  rewind(f);
+  if (file_sz < 0) {
+    fclose(f);
+    GMT_LogError("GMT_Record: failed to read test file.");
+    return false;
+  }
+  size_t total = (size_t)file_sz;
+  uint8_t* data = (uint8_t*)malloc(total);
+  if (!data) {
+    fclose(f);
+    GMT_LogError("GMT_Record: failed to read test file.");
+    return false;
+  }
+  if (fread(data, 1, total, f) != total) {
+    free(data);
+    fclose(f);
+    GMT_LogError("GMT_Record: failed to read test file.");
+    return false;
+  }
+  fclose(f);
 
   bool ok = false;
 
@@ -201,13 +212,7 @@ bool GMT_Record_LoadReplay(void) {
 
         GMT_DecodedFrame* df = &g_gmt.replay_frames[fi++];
         df->frame_index = raw.frame_index;
-        memcpy(df->keys, raw.keys, GMT_KEY_COUNT);
-        memcpy(df->key_repeats, raw.key_repeats, GMT_KEY_COUNT);
-        df->mouse_x = raw.mouse_x;
-        df->mouse_y = raw.mouse_y;
-        df->mouse_wheel_x = raw.mouse_wheel_x;
-        df->mouse_wheel_y = raw.mouse_wheel_y;
-        df->mouse_buttons = raw.mouse_buttons;
+        df->input = raw.input;
       } else if (tag == GMT_RECORD_TAG_SIGNAL) {
         GMT_RawSignalRecord raw;
         memcpy(&raw, cursor, sizeof(raw));
@@ -225,7 +230,7 @@ bool GMT_Record_LoadReplay(void) {
   ok = true;
 
 cleanup:
-  GMT_Platform_FreeBuffer(data);
+  free(data);
   return ok;
 }
 
@@ -272,18 +277,8 @@ void GMT_Record_InjectFrame(void) {
 
   GMT_DecodedFrame* df = &g_gmt.replay_frames[g_gmt.replay_frame_cursor];
 
-  GMT_Platform_InjectInput(
-      df->keys,
-      g_gmt.replay_prev_keys,
-      df->key_repeats,
-      df->mouse_x,
-      df->mouse_y,
-      df->mouse_wheel_x,
-      df->mouse_wheel_y,
-      df->mouse_buttons,
-      g_gmt.replay_prev_mouse_buttons);
+  GMT_Platform_InjectInput(&df->input, &g_gmt.replay_prev_input);
 
-  memcpy(g_gmt.replay_prev_keys, df->keys, GMT_KEY_COUNT);
-  g_gmt.replay_prev_mouse_buttons = df->mouse_buttons;
+  g_gmt.replay_prev_input = df->input;
   g_gmt.replay_frame_cursor++;
 }

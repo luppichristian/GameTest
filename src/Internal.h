@@ -7,6 +7,7 @@
 
 #pragma once
 
+#include <stdio.h>
 #include "GameTest.h"
 #include "Platform.h"
 
@@ -26,7 +27,7 @@
 // All multi-byte integers are little-endian.
 
 #define GMT_RECORD_MAGIC   0x54534D47u  // 'GMST' in memory (little-endian)
-#define GMT_RECORD_VERSION 2u
+#define GMT_RECORD_VERSION 0u
 
 #define GMT_RECORD_TAG_FRAME  ((uint8_t)0x01)
 #define GMT_RECORD_TAG_SIGNAL ((uint8_t)0x02)
@@ -34,26 +35,22 @@
 
 // Fixed-size file header written at the start of every test file.
 #pragma pack(push, 1)
-typedef struct {
-  uint32_t magic;
+typedef struct GMT_FileHeader {
+  uint16_t magic;
   uint16_t version;
-  uint16_t reserved;
 } GMT_FileHeader;
 
 // Body of a TAG_FRAME record (written without the tag byte).
-typedef struct {
+// GMT_InputState has no internal padding (key arrays size 104*2=208 aligns
+// the int32_t fields naturally), so the binary layout is identical to the
+// original flat field list and file-format compatibility is preserved.
+typedef struct GMT_RawFrameRecord {
   uint64_t frame_index;
-  uint8_t keys[GMT_KEY_COUNT];
-  uint8_t key_repeats[GMT_KEY_COUNT];  // Per-key auto-repeat event count this frame.
-  int32_t mouse_x;                     // Absolute screen position in pixels.
-  int32_t mouse_y;                     // Absolute screen position in pixels.
-  int32_t mouse_wheel_x;               // Horizontal wheel delta accumulated this frame (positive = right).
-  int32_t mouse_wheel_y;               // Vertical wheel delta accumulated this frame (positive = up).
-  GMT_MouseButtons mouse_buttons;
+  GMT_InputState input;
 } GMT_RawFrameRecord;
 
 // Body of a TAG_SIGNAL record (written without the tag byte).
-typedef struct {
+typedef struct GMT_RawSignalRecord {
   uint64_t frame_index;
   int32_t signal_id;
 } GMT_RawSignalRecord;
@@ -61,25 +58,19 @@ typedef struct {
 
 // ===== In-memory decoded records (used during REPLAY) =====
 
-typedef struct {
+typedef struct GMT_DecodedFrame {
   uint64_t frame_index;
-  uint8_t keys[GMT_KEY_COUNT];
-  uint8_t key_repeats[GMT_KEY_COUNT];  // Per-key auto-repeat event count this frame.
-  int32_t mouse_x;                     // Absolute screen position in pixels.
-  int32_t mouse_y;                     // Absolute screen position in pixels.
-  int32_t mouse_wheel_x;               // Horizontal wheel delta this frame (positive = right).
-  int32_t mouse_wheel_y;               // Vertical wheel delta this frame (positive = up).
-  GMT_MouseButtons mouse_buttons;
+  GMT_InputState input;
 } GMT_DecodedFrame;
 
-typedef struct {
+typedef struct GMT_DecodedSignal {
   uint64_t frame_index;
   int32_t signal_id;
 } GMT_DecodedSignal;
 
 // ===== Global framework state =====
 
-typedef struct {
+typedef struct GMT_State {
   bool initialized;
   GMT_Mode mode;
 
@@ -100,7 +91,7 @@ typedef struct {
   uint64_t frame_index;
 
   // ----- RECORD mode -----
-  GMT_FileHandle record_file;  // Open for streaming write while recording.
+  FILE* record_file;  // Open for streaming write while recording.
 
   // ----- REPLAY mode -----
   GMT_DecodedFrame* replay_frames;
@@ -112,15 +103,12 @@ typedef struct {
   size_t replay_signal_cursor;  // Index of next expected signal.
 
   // Previous per-frame input state, used to compute deltas for injection.
-  uint8_t replay_prev_keys[GMT_KEY_COUNT];
-  GMT_MouseButtons replay_prev_mouse_buttons;
+  GMT_InputState replay_prev_input;
 
   // Whether replay is blocked waiting for a game-side sync signal.
   bool waiting_for_signal;
   int32_t waiting_signal_id;
 
-  // ----- Thread safety -----
-  GMT_Mutex mutex;
 } GMT_State;
 
 // Defined in GameTest.c.

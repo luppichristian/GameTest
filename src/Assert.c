@@ -12,7 +12,7 @@
 void GMT_Assert_(bool condition, const char* msg, GMT_CodeLocation loc) {
   if (condition) return;
 
-  GMT_Platform_MutexLock(&g_gmt.mutex);
+  GMT_Platform_MutexLock();
 
   g_gmt.assertion_fire_count++;
 
@@ -33,10 +33,10 @@ void GMT_Assert_(bool condition, const char* msg, GMT_CodeLocation loc) {
   int trigger_count = g_gmt.setup.fail_assertion_trigger_count;
   int fire_count = g_gmt.assertion_fire_count;
 
-  GMT_Platform_MutexUnlock(&g_gmt.mutex);
+  GMT_Platform_MutexUnlock();
 
   // Log and notify outside the lock.
-  GMT_Log_(GMT_Severity_ERROR, msg, loc);
+  GMT_Log_(GMT_Severity_ERROR, loc, msg);
 
   if (trigger_cb) {
     GMT_Assertion a = {NULL, msg, loc};
@@ -50,23 +50,25 @@ void GMT_Assert_(bool condition, const char* msg, GMT_CodeLocation loc) {
 }
 
 bool GMT_GetFailedAssertions(GMT_Assertion* out_assertions, size_t max_assertions, size_t* out_count) {
-  if (!out_assertions || !out_count) return false;
+  if (!out_count) return false;
 
-  GMT_Platform_MutexLock(&g_gmt.mutex);
+  GMT_Platform_MutexLock();
   size_t n = g_gmt.failed_assertion_count;
-  if (n > max_assertions) n = max_assertions;
-  for (size_t i = 0; i < n; ++i) {
-    out_assertions[i] = g_gmt.failed_assertions[i];
+  if (out_assertions) {
+    if (n > max_assertions) n = max_assertions;
+    for (size_t i = 0; i < n; ++i) {
+      out_assertions[i] = g_gmt.failed_assertions[i];
+    }
   }
-  *out_count = n;
-  GMT_Platform_MutexUnlock(&g_gmt.mutex);
+  *out_count = g_gmt.failed_assertion_count;
+  GMT_Platform_MutexUnlock();
 
   return (n > 0);
 }
 
 void GMT_ClearFailedAssertions(void) {
-  GMT_Platform_MutexLock(&g_gmt.mutex);
+  GMT_Platform_MutexLock();
   g_gmt.failed_assertion_count = 0;
   g_gmt.assertion_fire_count = 0;
-  GMT_Platform_MutexUnlock(&g_gmt.mutex);
+  GMT_Platform_MutexUnlock();
 }

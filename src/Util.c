@@ -79,21 +79,25 @@ bool GMT_ParseTestMode(const char** args, size_t arg_count, GMT_Mode* out_mode) 
 // ===== Report =====
 
 void GMT_PrintReport(void) {
-  GMT_Platform_MutexLock(&g_gmt.mutex);
-
-  size_t failures = g_gmt.failed_assertion_count;
-  bool failed = g_gmt.test_failed;
-
-  // Snapshot the failure list so we can print it outside the lock.
-  GMT_Assertion snapshot[GMT_MAX_FAILED_ASSERTIONS];
-  size_t snap_count = failures < GMT_MAX_FAILED_ASSERTIONS ? failures : GMT_MAX_FAILED_ASSERTIONS;
-  for (size_t i = 0; i < snap_count; ++i) {
-    snapshot[i] = g_gmt.failed_assertions[i];
+  size_t failures = 0;
+  if (!GMT_GetFailedAssertions(NULL, 0, &failures)) {
+    GMT_LogError("Failed to get failed assertions for report");
+    return;
   }
 
-  GMT_Platform_MutexUnlock(&g_gmt.mutex);
+  GMT_Assertion* assertions = GMT_Alloc(sizeof(GMT_Assertion) * failures);
+  if (!assertions) {
+    GMT_LogError("Failed to allocate memory for failed assertions report");
+    return;
+  }
 
-  fprintf(stdout, "\n========== GameTest Report ==========\n");
+  if (!GMT_GetFailedAssertions(assertions, failures, &failures)) {
+    GMT_LogError("Failed to get failed assertions for report");
+    GMT_Free(assertions);
+    return;
+  }
+
+  GMT_LogInfo("========== GameTest Report ==========");
 
   const char* mode_str = "DISABLED";
   switch (g_gmt.mode) {
@@ -102,24 +106,22 @@ void GMT_PrintReport(void) {
     case GMT_Mode_DISABLED: mode_str = "DISABLED"; break;
   }
 
-  fprintf(stdout, "  Mode       : %s\n", mode_str);
+  GMT_LogInfo("  Mode       : %s\n", mode_str);
 
   if (g_gmt.setup.test_path) {
-    fprintf(stdout, "  Test file  : %s\n", g_gmt.setup.test_path);
+    GMT_LogInfo("  Test file  : %s\n", g_gmt.setup.test_path);
   }
 
-  fprintf(stdout, "  Frames run : %" PRIu64 "\n", g_gmt.frame_index);
-  fprintf(stdout, "  Failures   : %zu\n", failures);
+  GMT_LogInfo("  Frames run : %" PRIu64 "\n", g_gmt.frame_index);
 
-  if (snap_count > 0) {
-    fprintf(stdout, "\n  Failed assertions:\n");
-    for (size_t i = 0; i < snap_count; ++i) {
-      GMT_Assertion* a = &snapshot[i];
-      fprintf(stdout, "    [%zu] %s  (%s:%d in %s)\n", i + 1, a->msg ? a->msg : "(no message)", a->loc.file ? a->loc.file : "?", a->loc.line, a->loc.function ? a->loc.function : "?");
+  if (failures > 0) {
+    GMT_LogInfo("\n  Failed assertions (%zu):\n", failures);
+    for (size_t i = 0; i < failures; ++i) {
+      GMT_Assertion* a = &assertions[i];
+      GMT_LogInfo("    [%zu] %s  (%s:%d in %s)\n", i + 1, a->msg ? a->msg : "(no message)", a->loc.file ? a->loc.file : "?", a->loc.line, a->loc.function ? a->loc.function : "?");
     }
   }
 
-  fprintf(stdout, "\n  Result : %s\n", (failed || failures > 0) ? "FAIL" : "PASS");
-  fprintf(stdout, "=====================================\n\n");
-  fflush(stdout);
+  GMT_LogInfo("=====================================\n\n");
+  GMT_Free(assertions);
 }

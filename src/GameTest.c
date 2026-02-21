@@ -36,11 +36,8 @@ bool GMT_Init(const GMT_Setup* setup) {
   // Zero the state before populating it.
   memset(&g_gmt, 0, sizeof(g_gmt));
 
-  // Create the mutex first so that any subsequent log/alloc calls are safe.
-  GMT_Platform_MutexCreate(&g_gmt.mutex);
-
   // Install platform input hooks (e.g. mouse wheel accumulator).
-  GMT_Platform_InputInit();
+  GMT_Platform_Init();
 
   // Shallow-copy the setup.  The caller is responsible for keeping any
   // strings and arrays (test_path, work_dir, directory_mappings) alive.
@@ -57,7 +54,6 @@ bool GMT_Init(const GMT_Setup* setup) {
     case GMT_Mode_RECORD:
       if (!GMT_Record_OpenForWrite()) {
         GMT_LogError("GMT_Init: failed to open test file for recording.");
-        GMT_Platform_MutexDestroy(&g_gmt.mutex);
         memset(&g_gmt, 0, sizeof(g_gmt));
         return false;
       }
@@ -66,7 +62,6 @@ bool GMT_Init(const GMT_Setup* setup) {
     case GMT_Mode_REPLAY:
       if (!GMT_Record_LoadReplay()) {
         GMT_LogError("GMT_Init: failed to load test file for replay.");
-        GMT_Platform_MutexDestroy(&g_gmt.mutex);
         memset(&g_gmt, 0, sizeof(g_gmt));
         return false;
       }
@@ -98,8 +93,7 @@ void GMT_Quit(void) {
 
   GMT_PrintReport();
 
-  GMT_Platform_InputQuit();
-  GMT_Platform_MutexDestroy(&g_gmt.mutex);
+  GMT_Platform_Quit();
   memset(&g_gmt, 0, sizeof(g_gmt));
 }
 
@@ -108,7 +102,7 @@ void GMT_Quit(void) {
 void GMT_Update(void) {
   if (!g_gmt.initialized) return;
 
-  GMT_Platform_MutexLock(&g_gmt.mutex);
+  GMT_Platform_MutexLock();
 
   switch (g_gmt.mode) {
     case GMT_Mode_RECORD:
@@ -123,13 +117,13 @@ void GMT_Update(void) {
 
   g_gmt.frame_index++;
 
-  GMT_Platform_MutexUnlock(&g_gmt.mutex);
+  GMT_Platform_MutexUnlock();
 }
 
 void GMT_Reset(void) {
   if (!g_gmt.initialized) return;
 
-  GMT_Platform_MutexLock(&g_gmt.mutex);
+  GMT_Platform_MutexLock();
 
   // Tear down the current recording / replay session.
   switch (g_gmt.mode) {
@@ -156,18 +150,17 @@ void GMT_Reset(void) {
   g_gmt.assertion_fire_count = 0;
   g_gmt.waiting_for_signal = false;
   g_gmt.waiting_signal_id = 0;
-  memset(g_gmt.replay_prev_keys, 0, sizeof(g_gmt.replay_prev_keys));
-  g_gmt.replay_prev_mouse_buttons = 0;
+  GMT_InputState_Clear(&g_gmt.replay_prev_input);
 
-  GMT_Platform_MutexUnlock(&g_gmt.mutex);
+  GMT_Platform_MutexUnlock();
 }
 
 void GMT_Fail(void) {
   if (!g_gmt.initialized) return;
 
-  GMT_Platform_MutexLock(&g_gmt.mutex);
+  GMT_Platform_MutexLock();
   g_gmt.test_failed = true;
-  GMT_Platform_MutexUnlock(&g_gmt.mutex);
+  GMT_Platform_MutexUnlock();
 
   // Dereference pointer-to-function-pointer pattern used for overridable callbacks.
   if (g_gmt.setup.fail_callback && *g_gmt.setup.fail_callback) {

@@ -15,7 +15,7 @@
 void GMT_SyncSignal_(int id, GMT_CodeLocation loc) {
   if (!g_gmt.initialized) return;
 
-  GMT_Platform_MutexLock(&g_gmt.mutex);
+  GMT_Platform_MutexLock();
 
   switch (g_gmt.mode) {
     case GMT_Mode_RECORD:
@@ -38,10 +38,10 @@ void GMT_SyncSignal_(int id, GMT_CodeLocation loc) {
   // Fire user callback (pointer to function pointer; read through it).
   if (g_gmt.setup.signal_callback && *g_gmt.setup.signal_callback) {
     GMT_SignalCallback cb = *g_gmt.setup.signal_callback;
-    GMT_Platform_MutexUnlock(&g_gmt.mutex);
+    GMT_Platform_MutexUnlock();
     cb(g_gmt.mode, id, loc);
     return;
   }
 
-  GMT_Platform_MutexUnlock(&g_gmt.mutex);
+  GMT_Platform_MutexUnlock();
 }
