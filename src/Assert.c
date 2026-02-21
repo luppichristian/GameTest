@@ -46,11 +46,11 @@ void GMT_Assert_(bool condition, const char* msg, GMT_CodeLocation loc) {
 
   if (trigger_count <= 1) trigger_count = 1;
   if (fire_count >= trigger_count) {
-    GMT_Fail();
+    GMT_Fail_();
   }
 }
 
-bool GMT_GetFailedAssertions(GMT_Assertion* out_assertions, size_t max_assertions, size_t* out_count) {
+bool GMT_GetFailedAssertions_(GMT_Assertion* out_assertions, size_t max_assertions, size_t* out_count) {
   if (!out_count) return false;
   if (g_gmt.mode == GMT_Mode_DISABLED) {
     *out_count = 0;
@@ -71,7 +71,7 @@ bool GMT_GetFailedAssertions(GMT_Assertion* out_assertions, size_t max_assertion
   return (n > 0);
 }
 
-void GMT_ClearFailedAssertions(void) {
+void GMT_ClearFailedAssertions_(void) {
   if (g_gmt.mode == GMT_Mode_DISABLED) return;
   GMT_Platform_MutexLock();
   g_gmt.failed_assertion_count = 0;

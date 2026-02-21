@@ -22,10 +22,8 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
-#define ENABLE_GAME_TEST 1
-#if ENABLE_GAME_TEST
-#  include <GameTest.h>
-#endif
+// #define GMT_DISABLE
+#include <GameTest.h>
 
 #include <GLFW/glfw3.h>
 #include <stdlib.h>
@@ -199,71 +197,81 @@ static void key_callback(GLFWwindow* win, int key, int scancode, int action, int
 }
 
 int main(int argc, char** argv) {
-#if ENABLE_GAME_TEST
-  srand(0);  // Fixed seed for deterministic behavior during tests
-
-  char test_name[256] = {0};
-  GMT_ParseTestFilePath(argv, argc, test_name, sizeof(test_name));
-
-  GMT_Mode test_mode = GMT_Mode_DISABLED;
-  GMT_ParseTestMode(argv, argc, &test_mode);
-
-  GMT_Setup setup = {
-      .mode = test_mode,
-      .test_path = test_name,
-      .fail_assertion_trigger_count = 1,
-  };
-
-  if (!GMT_Init(&setup)) {
-    fprintf(stderr, "Failed to initialize GameTest\n");
-  }
-
-#else
+#ifdef GMT_DISABLE
   srand((unsigned int)time(NULL));
+#else
+  srand(0);  // Fixed seed for deterministic behavior during tests
 #endif
 
-  if (!glfwInit()) return 1;
-  glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
-  GLFWwindow* win = glfwCreateWindow(WIN_W, WIN_H, "Snake", NULL, NULL);
-  if (!win) {
-    glfwTerminate();
-    return 1;
+  {
+    // Init GameTest with command-line args.
+
+    char test_name[256] = {0};
+    GMT_Mode test_mode = GMT_Mode_DISABLED;
+    GMT_ParseTestMode(argv, argc, &test_mode);
+    GMT_ParseTestFilePath(argv, argc, test_name, sizeof(test_name));
+
+    GMT_Setup setup = {
+        .mode = test_mode,
+        .test_path = test_name,
+        .fail_assertion_trigger_count = 1,
+    };
+
+    if (!GMT_Init(&setup)) {
+      fprintf(stderr, "Failed to initialize GameTest\n");
+    }
   }
 
-  const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
-  if (mode)
-    glfwSetWindowPos(win, (mode->width - WIN_W) / 2, (mode->height - WIN_H) / 2);
+  GLFWwindow* win = NULL;
+  {
+    // Init GLFW and create window.
 
-  glfwMakeContextCurrent(win);
-  glfwSwapInterval(1);
+    if (!glfwInit()) return 1;
+    glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+    win = glfwCreateWindow(WIN_W, WIN_H, "Snake", NULL, NULL);
+    if (!win) {
+      glfwTerminate();
+      return 1;
+    }
+
+    const GLFWvidmode* mode = glfwGetVideoMode(glfwGetPrimaryMonitor());
+    if (mode)
+      glfwSetWindowPos(win, (mode->width - WIN_W) / 2, (mode->height - WIN_H) / 2);
+
+    glfwMakeContextCurrent(win);
+    glfwSwapInterval(1);
+    glfwSetKeyCallback(win, key_callback);
+  }
+
+  // Init game
   game_init();
-  glfwSetKeyCallback(win, key_callback);
-
-#if ENABLE_GAME_TEST
   GMT_SyncSignalString("Init");
-#endif
 
-  double prev = glfwGetTime();
-  while (!glfwWindowShouldClose(win)) {
-#if ENABLE_GAME_TEST
-    GMT_Update();
-#endif
+  // Main loop
+  {
+    double prev = glfwGetTime();
+    while (!glfwWindowShouldClose(win)) {
+      // Update GameTest
+      GMT_Update();
 
-    glfwPollEvents();
-    double now = glfwGetTime(), dt = now - prev;
-    prev = now;
-    for (G.tick_timer += dt; G.tick_timer >= G.tick_rate; G.tick_timer -= G.tick_rate)
-      game_step();
-    if (G.game_over) glfwSetWindowShouldClose(win, GLFW_TRUE);
-    render();
-    glfwSwapBuffers(win);
+      // Update and render the game
+      glfwPollEvents();
+      double now = glfwGetTime(), dt = now - prev;
+      prev = now;
+      for (G.tick_timer += dt; G.tick_timer >= G.tick_rate; G.tick_timer -= G.tick_rate)
+        game_step();
+      if (G.game_over) glfwSetWindowShouldClose(win, GLFW_TRUE);
+      render();
+      glfwSwapBuffers(win);
+    }
   }
 
-  glfwDestroyWindow(win);
-  glfwTerminate();
+  {
+    // Quit
+    glfwDestroyWindow(win);
+    glfwTerminate();
+    GMT_Quit();
+  }
 
-#if ENABLE_GAME_TEST
-  GMT_Quit();
-#endif
   return 0;
 }

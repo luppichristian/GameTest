@@ -75,9 +75,15 @@ typedef void (*GMT_LogCallback)(
 
 GMT_API void GMT_Log_(GMT_Severity severity, GMT_CodeLocation loc, const char* fmt, ...);  // Internal, use macros below.
 
-#define GMT_LogInfo(fmt, ...)    GMT_Log_(GMT_Severity_INFO, GMT_LOCATION(), fmt, ##__VA_ARGS__)
-#define GMT_LogWarning(fmt, ...) GMT_Log_(GMT_Severity_WARNING, GMT_LOCATION(), fmt, ##__VA_ARGS__)
-#define GMT_LogError(fmt, ...)   GMT_Log_(GMT_Severity_ERROR, GMT_LOCATION(), fmt, ##__VA_ARGS__)
+#ifndef GMT_DISABLE
+#  define GMT_LogInfo(fmt, ...)    GMT_Log_(GMT_Severity_INFO, GMT_LOCATION(), fmt, ##__VA_ARGS__)
+#  define GMT_LogWarning(fmt, ...) GMT_Log_(GMT_Severity_WARNING, GMT_LOCATION(), fmt, ##__VA_ARGS__)
+#  define GMT_LogError(fmt, ...)   GMT_Log_(GMT_Severity_ERROR, GMT_LOCATION(), fmt, ##__VA_ARGS__)
+#else
+#  define GMT_LogInfo(fmt, ...)    ((void)0)
+#  define GMT_LogWarning(fmt, ...) ((void)0)
+#  define GMT_LogError(fmt, ...)   ((void)0)
+#endif
 
 // ===== Memory Management =====
 
@@ -90,9 +96,15 @@ GMT_API void* GMT_Alloc_(size_t size, GMT_CodeLocation loc);                   /
 GMT_API void GMT_Free_(void* ptr, GMT_CodeLocation loc);                       // Internal, use macros below.
 GMT_API void* GMT_Realloc_(void* ptr, size_t new_size, GMT_CodeLocation loc);  // Internal, use macros below.
 
-#define GMT_Alloc(size)        GMT_Alloc_(size, GMT_LOCATION())
-#define GMT_Free(ptr)          GMT_Free_(ptr, GMT_LOCATION())
-#define GMT_Realloc(ptr, size) GMT_Realloc_(ptr, size, GMT_LOCATION())
+#ifndef GMT_DISABLE
+#  define GMT_Alloc(size)        GMT_Alloc_(size, GMT_LOCATION())
+#  define GMT_Free(ptr)          GMT_Free_(ptr, GMT_LOCATION())
+#  define GMT_Realloc(ptr, size) GMT_Realloc_(ptr, size, GMT_LOCATION())
+#else
+#  define GMT_Alloc(size)        ((void*)0)
+#  define GMT_Free(ptr)          ((void)0)
+#  define GMT_Realloc(ptr, size) ((void*)0)
+#endif
 
 // ===== Assertion Data =====
 
@@ -143,21 +155,39 @@ typedef struct GMT_Setup {
 } GMT_Setup;
 
 // Initializes the framework with the given setup.
-GMT_API bool GMT_Init(const GMT_Setup* setup);
+GMT_API bool GMT_Init_(const GMT_Setup* setup);
 
 // Shuts down the framework and frees resources.
-GMT_API void GMT_Quit(void);
+GMT_API void GMT_Quit_(void);
+
+#ifndef GMT_DISABLE
+#  define GMT_Init(setup) GMT_Init_(setup)
+#  define GMT_Quit()      GMT_Quit_()
+#else
+#  define GMT_Init(setup) (true)
+#  define GMT_Quit()      ((void)0)
+#endif
 
 // ===== Runtime =====
 
 // Call once per frame, before polling input or processing game logic.
-GMT_API void GMT_Update(void);
+GMT_API void GMT_Update_(void);
 
 // Discards the current recording/replay and starts fresh from the next frame.
-GMT_API void GMT_Reset(void);
+GMT_API void GMT_Reset_(void);
 
 // Immediately fails the current test.
-GMT_API void GMT_Fail(void);
+GMT_API void GMT_Fail_(void);
+
+#ifndef GMT_DISABLE
+#  define GMT_Update() GMT_Update_()
+#  define GMT_Reset()  GMT_Reset_()
+#  define GMT_Fail()   GMT_Fail_()
+#else
+#  define GMT_Update() ((void)0)
+#  define GMT_Reset()  ((void)0)
+#  define GMT_Fail()   ((void)0)
+#endif
 
 // ===== Assertions =====
 
@@ -170,38 +200,77 @@ GMT_API void GMT_Fail(void);
 
 GMT_API void GMT_Assert_(bool condition, const char* msg, GMT_CodeLocation loc);  // Internal, use macros below.
 
+#ifndef GMT_DISABLE
+
 // Assert macros with a custom message:
-#define GMT_AssertMsg(condition, msg)      GMT_Assert_(condition, msg, GMT_LOCATION())
-#define GMT_AssertTrueMsg(condition, msg)  GMT_Assert_((condition), msg, GMT_LOCATION())
-#define GMT_AssertFalseMsg(condition, msg) GMT_Assert_(!(condition), msg, GMT_LOCATION())
-#define GMT_AssertEqualMsg(a, b, msg)      GMT_Assert_((a) == (b), msg, GMT_LOCATION())
-#define GMT_AssertNotEqualMsg(a, b, msg)   GMT_Assert_((a) != (b), msg, GMT_LOCATION())
-#define GMT_AssertZeroMsg(value, msg)      GMT_Assert_((value) == 0, msg, GMT_LOCATION())
-#define GMT_AssertNonZeroMsg(value, msg)   GMT_Assert_((value) != 0, msg, GMT_LOCATION())
-#define GMT_AssertNearFloatMsg(a, b, msg)  GMT_Assert_(fabsf((a) - (b)) < GMT_FLOAT_EPSILON, msg, GMT_LOCATION())
-#define GMT_AssertNearDoubleMsg(a, b, msg) GMT_Assert_(fabs((a) - (b)) < GMT_DOUBLE_EPSILON, msg, GMT_LOCATION())
+#  define GMT_AssertMsg(condition, msg)      GMT_Assert_(condition, msg, GMT_LOCATION())
+#  define GMT_AssertTrueMsg(condition, msg)  GMT_Assert_((condition), msg, GMT_LOCATION())
+#  define GMT_AssertFalseMsg(condition, msg) GMT_Assert_(!(condition), msg, GMT_LOCATION())
+#  define GMT_AssertEqualMsg(a, b, msg)      GMT_Assert_((a) == (b), msg, GMT_LOCATION())
+#  define GMT_AssertNotEqualMsg(a, b, msg)   GMT_Assert_((a) != (b), msg, GMT_LOCATION())
+#  define GMT_AssertZeroMsg(value, msg)      GMT_Assert_((value) == 0, msg, GMT_LOCATION())
+#  define GMT_AssertNonZeroMsg(value, msg)   GMT_Assert_((value) != 0, msg, GMT_LOCATION())
+#  define GMT_AssertNearFloatMsg(a, b, msg)  GMT_Assert_(fabsf((a) - (b)) < GMT_FLOAT_EPSILON, msg, GMT_LOCATION())
+#  define GMT_AssertNearDoubleMsg(a, b, msg) GMT_Assert_(fabs((a) - (b)) < GMT_DOUBLE_EPSILON, msg, GMT_LOCATION())
 
 // Assert macros with a default message:
-#define GMT_Assert(condition)      GMT_AssertMsg((condition), "Expected condition to be true: " #condition)
-#define GMT_AssertTrue(condition)  GMT_AssertTrueMsg((condition), "Expected condition to be true: " #condition)
-#define GMT_AssertFalse(condition) GMT_AssertFalseMsg((condition), "Expected condition to be false: " #condition)
-#define GMT_AssertEqual(a, b)      GMT_AssertEqualMsg((a), (b), "Expected values to be equal: " #a " == " #b)
-#define GMT_AssertNotEqual(a, b)   GMT_AssertNotEqualMsg((a), (b), "Expected values to be not equal: " #a " != " #b)
-#define GMT_AssertZero(value)      GMT_AssertZeroMsg((value), "Expected value to be zero: " #value)
-#define GMT_AssertNonZero(value)   GMT_AssertNonZeroMsg((value), "Expected value to be non-zero: " #value)
-#define GMT_AssertNearFloat(a, b)  GMT_AssertNearFloatMsg((a), (b), "Expected values to be approximately equal (float): " #a " ≈ " #b)
-#define GMT_AssertNearDouble(a, b) GMT_AssertNearDoubleMsg((a), (b), "Expected values to be approximately equal (double): " #a " ≈ " #b)
+#  define GMT_Assert(condition)      GMT_AssertMsg((condition), "Expected condition to be true: " #condition)
+#  define GMT_AssertTrue(condition)  GMT_AssertTrueMsg((condition), "Expected condition to be true: " #condition)
+#  define GMT_AssertFalse(condition) GMT_AssertFalseMsg((condition), "Expected condition to be false: " #condition)
+#  define GMT_AssertEqual(a, b)      GMT_AssertEqualMsg((a), (b), "Expected values to be equal: " #a " == " #b)
+#  define GMT_AssertNotEqual(a, b)   GMT_AssertNotEqualMsg((a), (b), "Expected values to be not equal: " #a " != " #b)
+#  define GMT_AssertZero(value)      GMT_AssertZeroMsg((value), "Expected value to be zero: " #value)
+#  define GMT_AssertNonZero(value)   GMT_AssertNonZeroMsg((value), "Expected value to be non-zero: " #value)
+#  define GMT_AssertNearFloat(a, b)  GMT_AssertNearFloatMsg((a), (b), "Expected values to be approximately equal (float): " #a " ≈ " #b)
+#  define GMT_AssertNearDouble(a, b) GMT_AssertNearDoubleMsg((a), (b), "Expected values to be approximately equal (double): " #a " ≈ " #b)
+
+#else
+#  define GMT_AssertMsg(condition, msg)      ((void)0)
+#  define GMT_AssertTrueMsg(condition, msg)  ((void)0)
+#  define GMT_AssertFalseMsg(condition, msg) ((void)0)
+#  define GMT_AssertEqualMsg(a, b, msg)      ((void)0)
+#  define GMT_AssertNotEqualMsg(a, b, msg)   ((void)0)
+#  define GMT_AssertZeroMsg(value, msg)      ((void)0)
+#  define GMT_AssertNonZeroMsg(value, msg)   ((void)0)
+#  define GMT_AssertNearFloatMsg(a, b, msg)  ((void)0)
+#  define GMT_AssertNearDoubleMsg(a, b, msg) ((void)0)
+#  define GMT_Assert(condition)              ((void)0)
+#  define GMT_AssertTrue(condition)          ((void)0)
+#  define GMT_AssertFalse(condition)         ((void)0)
+#  define GMT_AssertEqual(a, b)              ((void)0)
+#  define GMT_AssertNotEqual(a, b)           ((void)0)
+#  define GMT_AssertZero(value)              ((void)0)
+#  define GMT_AssertNonZero(value)           ((void)0)
+#  define GMT_AssertNearFloat(a, b)          ((void)0)
+#  define GMT_AssertNearDouble(a, b)         ((void)0)
+#endif
 
 // Retrieves failed assertions from the current test run.
-GMT_API bool GMT_GetFailedAssertions(GMT_Assertion* out_assertions, size_t max_assertions, size_t* out_count);
+GMT_API bool GMT_GetFailedAssertions_(GMT_Assertion* out_assertions, size_t max_assertions, size_t* out_count);
 
 // Clears the record of failed assertions for the current test run. Called automatically on GMT_Reset.
-GMT_API void GMT_ClearFailedAssertions(void);
+GMT_API void GMT_ClearFailedAssertions_(void);
+
+#ifndef GMT_DISABLE
+#  define GMT_GetFailedAssertions(out_assertions, max_assertions, out_count) GMT_GetFailedAssertions_(out_assertions, max_assertions, out_count)
+#  define GMT_ClearFailedAssertions()                                        GMT_ClearFailedAssertions_()
+#else
+#  define GMT_GetFailedAssertions(out_assertions, max_assertions, out_count) (false)
+#  define GMT_ClearFailedAssertions()                                        ((void)0)
+#endif
 
 // ===== Utilities =====
 
-GMT_API int GMT_HashString(const char* str);
-GMT_API int GMT_HashCodeLocation(GMT_CodeLocation loc);
+GMT_API int GMT_HashString_(const char* str);
+GMT_API int GMT_HashCodeLocation_(GMT_CodeLocation loc);
+
+#ifndef GMT_DISABLE
+#  define GMT_HashString(str)       GMT_HashString_(str)
+#  define GMT_HashCodeLocation(loc) GMT_HashCodeLocation_(loc)
+#else
+#  define GMT_HashString(str)       (0)
+#  define GMT_HashCodeLocation(loc) (0)
+#endif
 
 // Parses --test=<path> from args. Returns false if not found.
 GMT_API bool GMT_ParseTestFilePath(const char** args, size_t arg_count, char* out_path, size_t out_path_size);
@@ -210,7 +279,13 @@ GMT_API bool GMT_ParseTestFilePath(const char** args, size_t arg_count, char* ou
 GMT_API bool GMT_ParseTestMode(const char** args, size_t arg_count, GMT_Mode* out_mode);
 
 // Prints a summary report. Called automatically at the end of a test run.
-GMT_API void GMT_PrintReport(void);
+GMT_API void GMT_PrintReport_(void);
+
+#ifndef GMT_DISABLE
+#  define GMT_PrintReport() GMT_PrintReport_()
+#else
+#  define GMT_PrintReport() ((void)0)
+#endif
 
 // ===== Signals & Sync =====
 
@@ -225,9 +300,15 @@ GMT_API void GMT_PrintReport(void);
 // Disabled mode: no-op.
 GMT_API void GMT_SyncSignal_(int id, GMT_CodeLocation loc);
 
-#define GMT_SyncSignal(id)           GMT_SyncSignal_(id, GMT_LOCATION())
-#define GMT_SyncSignalString(string) GMT_SyncSignal_(GMT_HashString(string), GMT_LOCATION())                // String key hashed to int ID.
-#define GMT_SyncSignalAuto()         GMT_SyncSignal_(GMT_HashCodeLocation(GMT_LOCATION()), GMT_LOCATION())  // Call-site location hashed to int ID.
+#ifndef GMT_DISABLE
+#  define GMT_SyncSignal(id)           GMT_SyncSignal_(id, GMT_LOCATION())
+#  define GMT_SyncSignalString(string) GMT_SyncSignal_(GMT_HashString_(string), GMT_LOCATION())                // String key hashed to int ID.
+#  define GMT_SyncSignalAuto()         GMT_SyncSignal_(GMT_HashCodeLocation_(GMT_LOCATION()), GMT_LOCATION())  // Call-site location hashed to int ID.
+#else
+#  define GMT_SyncSignal(id)           ((void)0)
+#  define GMT_SyncSignalString(string) ((void)0)
+#  define GMT_SyncSignalAuto()         ((void)0)
+#endif
 
 // ===== Details =====
 

@@ -10,7 +10,7 @@
 // ===== Hashing =====
 
 // FNV-1a 32-bit hash.
-int GMT_HashString(const char* str) {
+int GMT_HashString_(const char* str) {
   if (!str) return 0;
   uint32_t hash = 2166136261u;
   while (*str) {
@@ -20,11 +20,11 @@ int GMT_HashString(const char* str) {
   return (int)hash;
 }
 
-int GMT_HashCodeLocation(GMT_CodeLocation loc) {
+int GMT_HashCodeLocation_(GMT_CodeLocation loc) {
   // Combine file, line, and function name into a single hash.
-  int h = GMT_HashString(loc.file);
+  int h = GMT_HashString_(loc.file);
   h ^= loc.line * 2654435761;  // Knuth multiplicative hash for the line.
-  h ^= GMT_HashString(loc.function);
+  h ^= GMT_HashString_(loc.function);
   return h;
 }
 
@@ -78,11 +78,11 @@ bool GMT_ParseTestMode(const char** args, size_t arg_count, GMT_Mode* out_mode) 
 
 // ===== Report =====
 
-void GMT_PrintReport(void) {
+void GMT_PrintReport_(void) {
   if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
   size_t failures = 0;
-  if (!GMT_GetFailedAssertions(NULL, 0, &failures)) {
+  if (!GMT_GetFailedAssertions_(NULL, 0, &failures)) {
     GMT_LogError("Failed to get failed assertions for report");
     return;
   }
@@ -93,7 +93,7 @@ void GMT_PrintReport(void) {
     return;
   }
 
-  if (!GMT_GetFailedAssertions(assertions, failures, &failures)) {
+  if (!GMT_GetFailedAssertions_(assertions, failures, &failures)) {
     GMT_LogError("Failed to get failed assertions for report");
     GMT_Free(assertions);
     return;

@@ -16,7 +16,7 @@ GMT_State g_gmt;
 
 static void GMT_DefaultFail(void) {
   GMT_LogError("Test FAILED.  Exiting.");
-  GMT_PrintReport();
+  GMT_PrintReport_();
   // Use abort instead of exit so that a debugger can catch it.
   // In CI the process will terminate with a non-zero code either way.
   abort();
@@ -24,7 +24,7 @@ static void GMT_DefaultFail(void) {
 
 // ===== Init / Quit =====
 
-bool GMT_Init(const GMT_Setup* setup) {
+bool GMT_Init_(const GMT_Setup* setup) {
   if (!setup) return false;
   if (g_gmt.initialized) {
     GMT_LogWarning("GMT_Init called while already initialized; call GMT_Quit first.");
@@ -93,7 +93,7 @@ bool GMT_Init(const GMT_Setup* setup) {
   return true;
 }
 
-void GMT_Quit(void) {
+void GMT_Quit_(void) {
   if (!g_gmt.initialized) return;
 
   if (g_gmt.mode == GMT_Mode_DISABLED) {
@@ -116,7 +116,7 @@ void GMT_Quit(void) {
       break;
   }
 
-  GMT_PrintReport();
+  GMT_PrintReport_();
 
   GMT_Platform_Quit();
   memset(&g_gmt, 0, sizeof(g_gmt));
@@ -124,7 +124,7 @@ void GMT_Quit(void) {
 
 // ===== Runtime =====
 
-void GMT_Update(void) {
+void GMT_Update_(void) {
   if (!g_gmt.initialized) return;
   if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
@@ -146,7 +146,7 @@ void GMT_Update(void) {
   GMT_Platform_MutexUnlock();
 }
 
-void GMT_Reset(void) {
+void GMT_Reset_(void) {
   if (!g_gmt.initialized) return;
   if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
@@ -187,7 +187,7 @@ void GMT_Reset(void) {
   GMT_Platform_MutexUnlock();
 }
 
-void GMT_Fail(void) {
+void GMT_Fail_(void) {
   if (!g_gmt.initialized) return;
   if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
