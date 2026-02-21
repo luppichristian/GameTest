@@ -1,21 +1,22 @@
 #!/bin/bash
-# Usage: ./gametest.sh <mode> <test_name> <executable>
+# Usage: ./game-test.sh <mode> <test_file> <executable>
 #   mode        - record | replay | disabled
-#   test_name   - name of the test (stored as tests/<test_name>.gmt)
+#   test_file   - test name (stored as tests/<name>.gmt) OR path to a .gmt file
 #   executable  - path to the game executable
 #
 # Examples:
-#   ./gametest.sh record  my_test  build/GameTest-Game.exe
-#   ./gametest.sh replay  my_test  build/GameTest-Game.exe
+#   ./game-test.sh record  my_test                      build/GameTest-Game.exe
+#   ./game-test.sh record  example/tests/playing.gmt   build/GameTest-Game.exe
+#   ./game-test.sh replay  my_test                      build/GameTest-Game.exe
 
 TESTS_DIR="tests"
 
 # ── Argument validation ──────────────────────────────────────────────────────
 
 usage() {
-  echo "Usage: $0 <mode> <test_name> <executable>"
+  echo "Usage: $0 <mode> <test_file> <executable>"
   echo "  mode        - record | replay | disabled"
-  echo "  test_name   - name of the test (stored as $TESTS_DIR/<test_name>.gmt)"
+  echo "  test_file   - test name (stored as $TESTS_DIR/<name>.gmt) OR path to a .gmt file"
   echo "  executable  - path to the game executable"
   exit 1
 }
@@ -25,7 +26,7 @@ if [ $# -lt 3 ]; then
 fi
 
 MODE="$1"
-TEST_NAME="$2"
+TEST_ARG="$2"
 GAME_EXE="$3"
 
 case "$MODE" in
@@ -37,7 +38,13 @@ esac
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-TEST_FILE="$REPO_ROOT/$TESTS_DIR/${TEST_NAME}.gmt"
+
+# Accept bare name or full .gmt path
+if [[ "$TEST_ARG" == *.gmt ]]; then
+  TEST_FILE="$REPO_ROOT/$TEST_ARG"
+else
+  TEST_FILE="$REPO_ROOT/$TESTS_DIR/${TEST_ARG}.gmt"
+fi
 EXE="$REPO_ROOT/$GAME_EXE"
 
 # ── Pre-flight checks ────────────────────────────────────────────────────────
@@ -55,19 +62,17 @@ if [ "$MODE" = "replay" ] && [ ! -f "$TEST_FILE" ]; then
 fi
 
 if [ "$MODE" = "record" ]; then
-  mkdir -p "$REPO_ROOT/$TESTS_DIR"
+  mkdir -p "$(dirname "$TEST_FILE")"
 fi
 
 # ── Run ──────────────────────────────────────────────────────────────────────
 
-echo "[$MODE] $TEST_NAME  ->  $TEST_FILE"
+echo "[$MODE] $TEST_ARG  ->  $TEST_FILE"
 "$EXE" "--test-mode=$MODE" "--test=$TEST_FILE"
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
   echo "Test exited with code $EXIT_CODE."
-else
-  echo "Done."
 fi
 
 exit $EXIT_CODE

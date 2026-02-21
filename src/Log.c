@@ -19,7 +19,16 @@ static void GMT_DefaultLogCallback(GMT_Severity severity, const char* msg, GMT_C
     case GMT_Severity_INFO:    prefix = "INFO"; break;
   }
 
-  fprintf(out, "[GameTest] [%s] %s  (%s:%d in %s)\n", prefix, msg ? msg : "(null)", loc.file ? loc.file : "?", loc.line, loc.function ? loc.function : "?");
+  const char* mode = "DISABLED";
+  switch (g_gmt.mode) {
+    case GMT_Mode_RECORD: mode = "RECORD"; break;
+    case GMT_Mode_REPLAY: mode = "REPLAY"; break;
+    case GMT_Mode_DISABLED:
+    default:
+      break;
+  }
+
+  fprintf(out, "[GameTest-%s] [%s] %s  (%s:%d in %s)\n", mode, prefix, msg ? msg : "(null)", loc.file ? loc.file : "?", loc.line, loc.function ? loc.function : "?");
   fflush(out);
 }
 

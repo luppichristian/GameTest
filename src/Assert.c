@@ -46,6 +46,7 @@ void GMT_Assert_(bool condition, const char* msg, GMT_CodeLocation loc) {
 
   if (trigger_count <= 1) trigger_count = 1;
   if (fire_count >= trigger_count) {
+    GMT_LogError("Assertion failure count %d has reached the trigger threshold of %d; failing test.", fire_count, trigger_count);
     GMT_Fail_();
   }
 }
@@ -54,7 +55,7 @@ bool GMT_GetFailedAssertions_(GMT_Assertion* out_assertions, size_t max_assertio
   if (!out_count) return false;
   if (g_gmt.mode == GMT_Mode_DISABLED) {
     *out_count = 0;
-    return false;
+    return true;
   }
 
   GMT_Platform_MutexLock();
@@ -67,8 +68,7 @@ bool GMT_GetFailedAssertions_(GMT_Assertion* out_assertions, size_t max_assertio
   }
   *out_count = g_gmt.failed_assertion_count;
   GMT_Platform_MutexUnlock();
-
-  return (n > 0);
+  return true;
 }
 
 void GMT_ClearFailedAssertions_(void) {

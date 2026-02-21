@@ -1,12 +1,14 @@
 @echo off
-rem Usage: game-test.bat <mode> <test_name> <executable>
+setlocal enabledelayedexpansion
+rem Usage: game-test.bat <mode> <test_file> <executable>
 rem   mode        - record | replay | disabled
-rem   test_name   - name of the test (stored as tests\<test_name>.gmt)
+rem   test_file   - test name (stored as tests\<name>.gmt) OR path to a .gmt file
 rem   executable  - path to the game executable
 rem
 rem Examples:
-rem   game-test.bat record  my_test  build\GameTest-Game.exe
-rem   game-test.bat replay  my_test  build\GameTest-Game.exe
+rem   game-test.bat record  my_test                        build\GameTest-Game.exe
+rem   game-test.bat record  example\tests\playing.gmt      build\GameTest-Game.exe
+rem   game-test.bat replay  my_test                        build\GameTest-Game.exe
 
 set TESTS_DIR=tests
 
@@ -15,7 +17,7 @@ rem ── Argument validation ────────────────�
 if "%~3"=="" goto usage
 
 set MODE=%~1
-set TEST_NAME=%~2
+set TEST_ARG=%~2
 set GAME_EXE=%~3
 
 if /i "%MODE%"=="record"   goto mode_ok
@@ -37,8 +39,16 @@ pushd "%SCRIPT_DIR%\.."
 set REPO_ROOT=%CD%
 popd
 
-set TEST_FILE=%REPO_ROOT%\%TESTS_DIR%\%TEST_NAME%.gmt
+rem If the argument already ends with .gmt treat it as a path, else build tests\<name>.gmt
+set _ARG_END=%TEST_ARG:~-4%
+if /i "%_ARG_END%"==".gmt" (
+  set TEST_FILE=%REPO_ROOT%\%TEST_ARG%
+) else (
+  set TEST_FILE=%REPO_ROOT%\%TESTS_DIR%\%TEST_ARG%.gmt
+)
+set TEST_FILE=%TEST_FILE:/=\%
 set EXE=%REPO_ROOT%\%GAME_EXE%
+set EXE=%EXE:/=\%
 
 rem ── Pre-flight checks ────────────────────────────────────────────────────────
 
@@ -57,19 +67,18 @@ if /i "%MODE%"=="replay" (
 )
 
 if /i "%MODE%"=="record" (
-  if not exist "%REPO_ROOT%\%TESTS_DIR%" mkdir "%REPO_ROOT%\%TESTS_DIR%"
+  for %%F in ("%TEST_FILE%") do set TEST_DIR=%%~dpF
+  if not exist "!TEST_DIR!" mkdir "!TEST_DIR!"
 )
 
 rem ── Run ──────────────────────────────────────────────────────────────────────
 
-echo [%MODE%] %TEST_NAME%  ->  %TEST_FILE%
+echo [%MODE%] %TEST_ARG%  ->  %TEST_FILE%
 "%EXE%" "--test-mode=%MODE%" "--test=%TEST_FILE%"
 set EXIT_CODE=%ERRORLEVEL%
 
 if %EXIT_CODE% neq 0 (
   echo Test exited with code %EXIT_CODE%.
-) else (
-  echo Done.
 )
 
 exit /b %EXIT_CODE%
@@ -79,6 +88,6 @@ rem ── Usage ─────────────────────
 :usage
 echo Usage: %~nx0 ^<mode^> ^<test_name^> ^<executable^>
 echo   mode        - record ^| replay ^| disabled
-echo   test_name   - name of the test ^(stored as %TESTS_DIR%\^<test_name^>.gmt^)
+echo   test_file   - test name ^(stored as %TESTS_DIR%\^<name^>.gmt^) OR path to a .gmt file
 echo   executable  - path to the game executable
 exit /b 1

@@ -18,6 +18,7 @@ void GMT_SyncSignal_(int id, GMT_CodeLocation loc) {
   if (!g_gmt.initialized) return;
   if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
+  GMT_LogInfo("Signal sync id %d triggered.", id);
   GMT_Platform_MutexLock();
 
   switch (g_gmt.mode) {

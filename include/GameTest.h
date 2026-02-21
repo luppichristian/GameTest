@@ -27,6 +27,7 @@ SOFTWARE.
 #include <stdint.h>
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 
 // ===== API Export =====
 
@@ -54,10 +55,18 @@ typedef struct GMT_CodeLocation {
   const char* function;
 } GMT_CodeLocation;
 
-#define GMT_LOCATION()           \
-  (GMT_CodeLocation) {           \
-    __FILE__, __LINE__, __func__ \
-  }
+#define __GMT_FILENAME__ (strrchr(__FILE__, '\\')  ? strrchr(__FILE__, '\\') + 1 \
+                          : strrchr(__FILE__, '/') ? strrchr(__FILE__, '/') + 1  \
+                                                   : (const char*)__FILE__)
+
+static inline GMT_CodeLocation GMT_MakeLocation_(const char* file, int line, const char* function) {
+  GMT_CodeLocation loc;
+  loc.file = file;
+  loc.line = line;
+  loc.function = function;
+  return loc;
+}
+#define GMT_LOCATION() GMT_MakeLocation_(__GMT_FILENAME__, __LINE__, __func__)
 
 // ===== Logging =====
 

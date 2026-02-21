@@ -25,7 +25,10 @@ static void GMT_DefaultFail(void) {
 // ===== Init / Quit =====
 
 bool GMT_Init_(const GMT_Setup* setup) {
-  if (!setup) return false;
+  if (!setup) {
+    GMT_LogError("GMT_Init: NULL setup pointer; aborting.");
+    return false;
+  }
   if (g_gmt.initialized) {
     GMT_LogWarning("GMT_Init called while already initialized; call GMT_Quit first.");
     return false;
@@ -38,6 +41,25 @@ bool GMT_Init_(const GMT_Setup* setup) {
   // The caller is responsible for keeping any strings and arrays alive.
   g_gmt.setup = *setup;
   g_gmt.mode = setup->mode;
+
+  {
+    const char* mode_str = (g_gmt.mode == GMT_Mode_RECORD)   ? "RECORD"
+                           : (g_gmt.mode == GMT_Mode_REPLAY) ? "REPLAY"
+                                                             : "DISABLED";
+    GMT_LogInfo("GMT_Init: Running with following setup:");
+    GMT_LogInfo("  mode                       = %s", mode_str);
+    GMT_LogInfo("  test_path                  = %s", setup->test_path ? setup->test_path : "(null)");
+    GMT_LogInfo("  work_dir                   = %s", setup->work_dir ? setup->work_dir : "(null)");
+    GMT_LogInfo("  directory_mapping_count    = %zu", setup->directory_mapping_count);
+    GMT_LogInfo("  fail_assertion_trigger_count = %d", setup->fail_assertion_trigger_count);
+    GMT_LogInfo("  log_callback               = %s", setup->log_callback ? "set" : "null");
+    GMT_LogInfo("  alloc_callback             = %s", setup->alloc_callback ? "set" : "null");
+    GMT_LogInfo("  free_callback              = %s", setup->free_callback ? "set" : "null");
+    GMT_LogInfo("  realloc_callback           = %s", setup->realloc_callback ? "set" : "null");
+    GMT_LogInfo("  signal_callback            = %s", setup->signal_callback ? "set" : "null");
+    GMT_LogInfo("  fail_callback              = %s", setup->fail_callback ? "set" : "null");
+    GMT_LogInfo("  assertion_trigger_callback = %s", setup->assertion_trigger_callback ? "set" : "null");
+  }
 
   // In DISABLED mode skip all platform hooks and timers.
   if (g_gmt.mode == GMT_Mode_DISABLED) {
@@ -61,6 +83,7 @@ bool GMT_Init_(const GMT_Setup* setup) {
         memset(&g_gmt, 0, sizeof(g_gmt));
         return false;
       }
+      GMT_LogInfo("GMT_Init: test file opened for recording.");
       break;
 
     case GMT_Mode_REPLAY:
@@ -69,8 +92,10 @@ bool GMT_Init_(const GMT_Setup* setup) {
         memset(&g_gmt, 0, sizeof(g_gmt));
         return false;
       }
+      GMT_LogInfo("GMT_Init: test file loaded for replay.");
       // Install IAT hooks to intercept all Win32 input-polling functions.
       GMT_Platform_InstallInputHooks();
+      GMT_LogInfo("GMT_Init: input hooks installed.");
       break;
 
     case GMT_Mode_DISABLED:
@@ -95,6 +120,7 @@ bool GMT_Init_(const GMT_Setup* setup) {
 
 void GMT_Quit_(void) {
   if (!g_gmt.initialized) return;
+  GMT_LogInfo("GMT_Quit: shutting down.");
 
   if (g_gmt.mode == GMT_Mode_DISABLED) {
     memset(&g_gmt, 0, sizeof(g_gmt));
@@ -107,9 +133,11 @@ void GMT_Quit_(void) {
   // Finalise recording / replay.
   switch (g_gmt.mode) {
     case GMT_Mode_RECORD:
+      GMT_LogInfo("GMT_Quit: closing recording file.");
       GMT_Record_CloseWrite();
       break;
     case GMT_Mode_REPLAY:
+      GMT_LogInfo("GMT_Quit: freeing replay data.");
       GMT_Record_FreeReplay();
       break;
     default:
@@ -151,6 +179,7 @@ void GMT_Reset_(void) {
   if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
   GMT_Platform_MutexLock();
+  GMT_LogInfo("GMT_Reset: resetting session (frame_index was %u).", g_gmt.frame_index);
 
   // Tear down the current recording / replay session.
   switch (g_gmt.mode) {
@@ -159,11 +188,13 @@ void GMT_Reset_(void) {
       GMT_Record_CloseWrite();
       // Reopen; any existing data is overwritten.
       GMT_Record_OpenForWrite();
+      GMT_LogInfo("GMT_Reset: recording file reopened.");
       break;
 
     case GMT_Mode_REPLAY:
       GMT_Record_FreeReplay();
       GMT_Record_LoadReplay();
+      GMT_LogInfo("GMT_Reset: replay data reloaded.");
       break;
 
     default:
@@ -193,6 +224,7 @@ void GMT_Fail_(void) {
 
   GMT_Platform_MutexLock();
   g_gmt.test_failed = true;
+  GMT_LogError("GMT_Fail: test marked as failed on frame %u.", g_gmt.frame_index);
   GMT_Platform_MutexUnlock();
 
   // Dereference pointer-to-function-pointer pattern used for overridable callbacks.

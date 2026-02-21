@@ -99,7 +99,7 @@ void GMT_PrintReport_(void) {
     return;
   }
 
-  GMT_LogInfo("========== GameTest Report ==========");
+  GMT_LogInfo("Report:");
 
   const char* mode_str = "DISABLED";
   switch (g_gmt.mode) {
@@ -108,22 +108,23 @@ void GMT_PrintReport_(void) {
     case GMT_Mode_DISABLED: mode_str = "DISABLED"; break;
   }
 
-  GMT_LogInfo("  Mode       : %s", mode_str);
+  GMT_LogInfo("  Mode           : %s", mode_str);
 
   if (g_gmt.setup.test_path) {
-    GMT_LogInfo("  Test file  : %s", g_gmt.setup.test_path);
+    GMT_LogInfo("  Test file      : %s", g_gmt.setup.test_path);
   }
 
-  GMT_LogInfo("  Frames run : %" PRIu64, g_gmt.frame_index);
+  GMT_LogInfo("  Frames run     : %" PRIu64, g_gmt.frame_index);
+
+  GMT_LogInfo("  Failed asserts : %zu", failures);
 
   if (failures > 0) {
-    GMT_LogInfo("  Failed assertions (%zu):", failures);
+    GMT_LogInfo("  Failed assertions:");
     for (size_t i = 0; i < failures; ++i) {
       GMT_Assertion* a = &assertions[i];
       GMT_LogInfo("    [%zu] %s  (%s:%d in %s)", i + 1, a->msg ? a->msg : "(no message)", a->loc.file ? a->loc.file : "?", a->loc.line, a->loc.function ? a->loc.function : "?");
     }
   }
 
-  GMT_LogInfo("=====================================");
   GMT_Free(assertions);
 }
