@@ -20,7 +20,7 @@
 // Layout:
 //   [GMT_FileHeader]
 //   N × tagged record:
-//     TAG_FRAME  (0x01) → GMT_RawFrameRecord
+//   TAG_INPUT  (0x01) → GMT_RawInputRecord
 //     TAG_SIGNAL (0x02) → GMT_RawSignalRecord
 //   TAG_END (0xFF)       → (no body)
 //
@@ -29,7 +29,7 @@
 #define GMT_RECORD_MAGIC   0x54534D47u  // 'GMST' in memory (little-endian)
 #define GMT_RECORD_VERSION 1u
 
-#define GMT_RECORD_TAG_FRAME  ((uint8_t)0x01)
+#define GMT_RECORD_TAG_INPUT  ((uint8_t)0x01)
 #define GMT_RECORD_TAG_SIGNAL ((uint8_t)0x02)
 #define GMT_RECORD_TAG_END    ((uint8_t)0xFF)
 
@@ -40,11 +40,11 @@ typedef struct GMT_FileHeader {
   uint16_t version;
 } GMT_FileHeader;
 
-// Body of a TAG_FRAME record (written without the tag byte).
-typedef struct GMT_RawFrameRecord {
+// Body of a TAG_INPUT record (written without the tag byte).
+typedef struct GMT_RawInputRecord {
   double timestamp;  // Seconds since start of recording.
   GMT_InputState input;
-} GMT_RawFrameRecord;
+} GMT_RawInputRecord;
 
 // Body of a TAG_SIGNAL record (written without the tag byte).
 typedef struct GMT_RawSignalRecord {
@@ -55,10 +55,10 @@ typedef struct GMT_RawSignalRecord {
 
 // ===== In-memory decoded records (used during REPLAY) =====
 
-typedef struct GMT_DecodedFrame {
+typedef struct GMT_DecodedInput {
   double timestamp;  // Seconds since start of recording.
   GMT_InputState input;
-} GMT_DecodedFrame;
+} GMT_DecodedInput;
 
 typedef struct GMT_DecodedSignal {
   double timestamp;  // Seconds since start of recording.
@@ -101,9 +101,9 @@ typedef struct GMT_State {
   FILE* record_file;  // Open for streaming write while recording.
 
   // ----- REPLAY mode -----
-  GMT_DecodedFrame* replay_frames;
-  size_t replay_frame_count;
-  size_t replay_frame_cursor;  // Index of next frame to inject.
+  GMT_DecodedInput* replay_inputs;
+  size_t replay_input_count;
+  size_t replay_input_cursor;  // Index of next input record to inject.
 
   GMT_DecodedSignal* replay_signals;
   size_t replay_signal_count;

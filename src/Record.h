@@ -18,24 +18,24 @@ bool GMT_Record_OpenForWrite(void);
 // Called during GMT_Quit when mode == GMT_Mode_RECORD.
 void GMT_Record_CloseWrite(void);
 
-// Captures system input and appends a TAG_FRAME record to the open record file.
+// Captures system input and appends a TAG_INPUT record to the open record file.
 // Called once per GMT_Update in RECORD mode.
-void GMT_Record_WriteFrame(void);
+void GMT_Record_WriteInput(void);
 
 // Appends a TAG_SIGNAL record for the given signal id at the current timestamp.
 // Called from GMT_SyncSignal_ in RECORD mode.
 void GMT_Record_WriteSignal(int32_t signal_id);
 
-// Loads the test file and decodes all frame and signal records into g_gmt arrays.
-// Allocates replay_frames and replay_signals via GMT_Alloc.
+// Loads the test file and decodes all input and signal records into g_gmt arrays.
+// Allocates replay_inputs and replay_signals via GMT_Alloc.
 // Called during GMT_Init when mode == GMT_Mode_REPLAY.
 bool GMT_Record_LoadReplay(void);
 
-// Frees replay_frames and replay_signals if allocated.
+// Frees replay_inputs and replay_signals if allocated.
 // Called during GMT_Quit when mode == GMT_Mode_REPLAY.
 void GMT_Record_FreeReplay(void);
 
-// Injects the input snapshot for the current replay frame and advances the cursor.
+// Injects the input snapshot for the current replay input record and advances the cursor.
 // Handles sync-signal gating: refuses to inject if waiting_for_signal is set.
 // Called once per GMT_Update in REPLAY mode.
-void GMT_Record_InjectFrame(void);
+void GMT_Record_InjectInput(void);

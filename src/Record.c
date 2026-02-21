@@ -1,14 +1,14 @@
 /*
  * Record.c - Recording and replay engine.
  *
- * In RECORD mode: captures system input once per frame and streams tagged binary
+ * In RECORD mode: captures system input once per update and streams tagged binary
  * records to disk.  Signals are embedded inline as TAG_SIGNAL records.
  * All records carry a floating-point timestamp (seconds since start of recording)
  * so that replay is framerate-independent.
  *
  * In REPLAY mode: the test file is fully loaded at init time, decoded into
- * per-frame and per-signal arrays, then fed back based on wall-clock time via
- * GMT_Record_InjectFrame.  If a sync signal gates the next block of events,
+ * per-input and per-signal arrays, then fed back based on wall-clock time via
+ * GMT_Record_InjectInput.  If a sync signal gates the next block of events,
  * injection is paused until the game emits that signal via GMT_SyncSignal_.
  * Time spent waiting for a signal is accumulated in replay_time_offset so
  * that subsequent timestamps remain consistent.
@@ -71,14 +71,14 @@ void GMT_Record_CloseWrite(void) {
   g_gmt.record_file = NULL;
 }
 
-void GMT_Record_WriteFrame(void) {
+void GMT_Record_WriteInput(void) {
   if (!g_gmt.record_file) return;
 
-  GMT_RawFrameRecord rec;
+  GMT_RawInputRecord rec;
   rec.timestamp = GMT_Platform_GetTime() - g_gmt.record_start_time;
   GMT_Platform_CaptureInput(&rec.input);
 
-  uint8_t tag = GMT_RECORD_TAG_FRAME;
+  uint8_t tag = GMT_RECORD_TAG_INPUT;
   fwrite(&tag, 1, 1, g_gmt.record_file);
   fwrite(&rec, sizeof(rec), 1, g_gmt.record_file);
 }
@@ -159,20 +159,20 @@ bool GMT_Record_LoadReplay(void) {
   }
 
   // First pass: count records.
-  size_t frame_count = 0;
+  size_t input_count = 0;
   size_t signal_count = 0;
   {
     const uint8_t* scan = cursor;
     while (scan < end) {
       uint8_t tag = *scan++;
       if (tag == GMT_RECORD_TAG_END) break;
-      if (tag == GMT_RECORD_TAG_FRAME) {
-        if (scan + sizeof(GMT_RawFrameRecord) > end) {
-          GMT_LogError("GMT_Record: truncated frame record.");
+      if (tag == GMT_RECORD_TAG_INPUT) {
+        if (scan + sizeof(GMT_RawInputRecord) > end) {
+          GMT_LogError("GMT_Record: truncated input record.");
           goto cleanup;
         }
-        scan += sizeof(GMT_RawFrameRecord);
-        ++frame_count;
+        scan += sizeof(GMT_RawInputRecord);
+        ++input_count;
       } else if (tag == GMT_RECORD_TAG_SIGNAL) {
         if (scan + sizeof(GMT_RawSignalRecord) > end) {
           GMT_LogError("GMT_Record: truncated signal record.");
@@ -188,10 +188,10 @@ bool GMT_Record_LoadReplay(void) {
   }
 
   // Allocate decoded arrays.
-  if (frame_count > 0) {
-    g_gmt.replay_frames = (GMT_DecodedFrame*)GMT_Alloc(frame_count * sizeof(GMT_DecodedFrame));
-    if (!g_gmt.replay_frames) {
-      GMT_LogError("GMT_Record: allocation failed for replay frames.");
+  if (input_count > 0) {
+    g_gmt.replay_inputs = (GMT_DecodedInput*)GMT_Alloc(input_count * sizeof(GMT_DecodedInput));
+    if (!g_gmt.replay_inputs) {
+      GMT_LogError("GMT_Record: allocation failed for replay inputs.");
       goto cleanup;
     }
   }
@@ -205,18 +205,18 @@ bool GMT_Record_LoadReplay(void) {
 
   // Second pass: decode.
   {
-    size_t fi = 0, si = 0;
+    size_t ii = 0, si = 0;
     while (cursor < end) {
       uint8_t tag = *cursor++;
       if (tag == GMT_RECORD_TAG_END) break;
-      if (tag == GMT_RECORD_TAG_FRAME) {
-        GMT_RawFrameRecord raw;
+      if (tag == GMT_RECORD_TAG_INPUT) {
+        GMT_RawInputRecord raw;
         memcpy(&raw, cursor, sizeof(raw));
         cursor += sizeof(raw);
 
-        GMT_DecodedFrame* df = &g_gmt.replay_frames[fi++];
-        df->timestamp = raw.timestamp;
-        df->input = raw.input;
+        GMT_DecodedInput* di = &g_gmt.replay_inputs[ii++];
+        di->timestamp = raw.timestamp;
+        di->input = raw.input;
       } else if (tag == GMT_RECORD_TAG_SIGNAL) {
         GMT_RawSignalRecord raw;
         memcpy(&raw, cursor, sizeof(raw));
@@ -229,7 +229,7 @@ bool GMT_Record_LoadReplay(void) {
     }
   }
 
-  g_gmt.replay_frame_count = frame_count;
+  g_gmt.replay_input_count = input_count;
   g_gmt.replay_signal_count = signal_count;
   ok = true;
 
@@ -239,53 +239,53 @@ cleanup:
 }
 
 void GMT_Record_FreeReplay(void) {
-  if (g_gmt.replay_frames) {
-    GMT_Free(g_gmt.replay_frames);
-    g_gmt.replay_frames = NULL;
+  if (g_gmt.replay_inputs) {
+    GMT_Free(g_gmt.replay_inputs);
+    g_gmt.replay_inputs = NULL;
   }
   if (g_gmt.replay_signals) {
     GMT_Free(g_gmt.replay_signals);
     g_gmt.replay_signals = NULL;
   }
-  g_gmt.replay_frame_count = 0;
+  g_gmt.replay_input_count = 0;
   g_gmt.replay_signal_count = 0;
-  g_gmt.replay_frame_cursor = 0;
+  g_gmt.replay_input_cursor = 0;
   g_gmt.replay_signal_cursor = 0;
 }
 
-void GMT_Record_InjectFrame(void) {
+void GMT_Record_InjectInput(void) {
   // If we're waiting for a sync signal, do not inject yet.
   if (g_gmt.waiting_for_signal) return;
 
   double now = GMT_Platform_GetTime();
   double replay_time = (now - g_gmt.record_start_time) - g_gmt.replay_time_offset;
 
-  // Process frames and signals in chronological order.
-  // Frames whose timestamp has been reached are consumed; only the latest one
+  // Process input records and signals in chronological order.
+  // Input records whose timestamp has been reached are consumed; only the latest one
   // is actually injected (intermediate ones are skipped).  A signal whose
   // timestamp has been reached gates further injection until the game emits it.
-  GMT_DecodedFrame* last_frame_to_inject = NULL;
+  GMT_DecodedInput* last_input_to_inject = NULL;
 
   while (1) {
-    bool have_frame = g_gmt.replay_frame_cursor < g_gmt.replay_frame_count;
+    bool have_input = g_gmt.replay_input_cursor < g_gmt.replay_input_count;
     bool have_signal = g_gmt.replay_signal_cursor < g_gmt.replay_signal_count;
 
-    if (!have_frame && !have_signal) break;
+    if (!have_input && !have_signal) break;
 
-    double ft = have_frame ? g_gmt.replay_frames[g_gmt.replay_frame_cursor].timestamp : 1e18;
+    double it = have_input ? g_gmt.replay_inputs[g_gmt.replay_input_cursor].timestamp : 1e18;
     double st = have_signal ? g_gmt.replay_signals[g_gmt.replay_signal_cursor].timestamp : 1e18;
 
-    // Signal wins ties — it must gate before a same-timestamp frame is replayed.
-    bool signal_first = have_signal && st <= ft;
+    // Signal wins ties — it must gate before a same-timestamp input record is replayed.
+    bool signal_first = have_signal && st <= it;
 
     if (signal_first) {
       if (st > replay_time) break;  // Signal is in the future; nothing to do yet.
 
-      // Signal's time has been reached.  Inject any accumulated frame first, then gate.
-      if (last_frame_to_inject) {
-        GMT_Platform_InjectInput(&last_frame_to_inject->input, &g_gmt.replay_prev_input);
-        g_gmt.replay_prev_input = last_frame_to_inject->input;
-        last_frame_to_inject = NULL;
+      // Signal's time has been reached.  Inject any accumulated input first, then gate.
+      if (last_input_to_inject) {
+        GMT_Platform_InjectInput(&last_input_to_inject->input, &g_gmt.replay_prev_input);
+        g_gmt.replay_prev_input = last_input_to_inject->input;
+        last_input_to_inject = NULL;
       }
 
       g_gmt.waiting_for_signal = true;
@@ -294,16 +294,16 @@ void GMT_Record_InjectFrame(void) {
       return;
     }
 
-    // Frame comes first.
-    if (ft > replay_time) break;  // Frame is in the future; stop.
+    // Input record comes first.
+    if (it > replay_time) break;  // Input record is in the future; stop.
 
-    // Consume the frame (only the last one consumed will actually be injected).
-    last_frame_to_inject = &g_gmt.replay_frames[g_gmt.replay_frame_cursor];
-    g_gmt.replay_frame_cursor++;
+    // Consume the input record (only the last one consumed will actually be injected).
+    last_input_to_inject = &g_gmt.replay_inputs[g_gmt.replay_input_cursor];
+    g_gmt.replay_input_cursor++;
   }
 
-  if (last_frame_to_inject) {
-    GMT_Platform_InjectInput(&last_frame_to_inject->input, &g_gmt.replay_prev_input);
-    g_gmt.replay_prev_input = last_frame_to_inject->input;
+  if (last_input_to_inject) {
+    GMT_Platform_InjectInput(&last_input_to_inject->input, &g_gmt.replay_prev_input);
+    g_gmt.replay_prev_input = last_input_to_inject->input;
   }
 }

@@ -110,10 +110,10 @@ void GMT_Update(void) {
 
   switch (g_gmt.mode) {
     case GMT_Mode_RECORD:
-      GMT_Record_WriteFrame();
+      GMT_Record_WriteInput();
       break;
     case GMT_Mode_REPLAY:
-      GMT_Record_InjectFrame();
+      GMT_Record_InjectInput();
       break;
     default:
       break;
