@@ -78,6 +78,10 @@ void GMT_Record_WriteInput(void) {
   rec.timestamp = GMT_Platform_GetTime() - g_gmt.record_start_time;
   GMT_Platform_CaptureInput(&rec.input);
 
+  // Skip writing if the input state is identical to the previous frame.
+  if (GMT_InputState_Compare(&rec.input, &g_gmt.record_prev_input)) return;
+  g_gmt.record_prev_input = rec.input;
+
   uint8_t tag = GMT_RECORD_TAG_INPUT;
   fwrite(&tag, 1, 1, g_gmt.record_file);
   fwrite(&rec, sizeof(rec), 1, g_gmt.record_file);

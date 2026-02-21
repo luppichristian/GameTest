@@ -100,6 +100,9 @@ typedef struct GMT_State {
   // ----- RECORD mode -----
   FILE* record_file;  // Open for streaming write while recording.
 
+  // Previous input state written to disk; used to skip duplicate frames.
+  GMT_InputState record_prev_input;
+
   // ----- REPLAY mode -----
   GMT_DecodedInput* replay_inputs;
   size_t replay_input_count;

@@ -243,3 +243,6 @@ typedef struct GMT_InputState {
 
 // Zeroes every field in *s.
 void GMT_InputState_Clear(GMT_InputState* s);
+
+// Returns true if *a and *b are identical (byte-wise comparison).
+bool GMT_InputState_Compare(const GMT_InputState* a, const GMT_InputState* b);
