@@ -48,6 +48,13 @@ void GMT_Platform_CaptureInput(GMT_InputState* out);
 // input queue stays consistent.  Mouse position is set unconditionally.
 void GMT_Platform_InjectInput(const GMT_InputState* new_input, const GMT_InputState* prev_input);
 
+// ===== High-Resolution Timer =====
+
+// Returns the current time in seconds from an arbitrary fixed epoch.
+// Used to stamp recorded frames and signals with floating-point timestamps
+// and to drive time-based replay.
+double GMT_Platform_GetTime(void);
+
 // ===== Mutex =====
 
 // Lock/unlock the single framework-wide recursive mutex.

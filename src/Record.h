@@ -22,9 +22,9 @@ void GMT_Record_CloseWrite(void);
 // Called once per GMT_Update in RECORD mode.
 void GMT_Record_WriteFrame(void);
 
-// Appends a TAG_SIGNAL record for the given signal id at the current frame index.
+// Appends a TAG_SIGNAL record for the given signal id at the current timestamp.
 // Called from GMT_SyncSignal_ in RECORD mode.
-void GMT_Record_WriteSignal(int32_t signal_id, uint64_t frame_index);
+void GMT_Record_WriteSignal(int32_t signal_id);
 
 // Loads the test file and decodes all frame and signal records into g_gmt arrays.
 // Allocates replay_frames and replay_signals via GMT_Alloc.

@@ -27,7 +27,7 @@
 // All multi-byte integers are little-endian.
 
 #define GMT_RECORD_MAGIC   0x54534D47u  // 'GMST' in memory (little-endian)
-#define GMT_RECORD_VERSION 0u
+#define GMT_RECORD_VERSION 1u
 
 #define GMT_RECORD_TAG_FRAME  ((uint8_t)0x01)
 #define GMT_RECORD_TAG_SIGNAL ((uint8_t)0x02)
@@ -41,17 +41,14 @@ typedef struct GMT_FileHeader {
 } GMT_FileHeader;
 
 // Body of a TAG_FRAME record (written without the tag byte).
-// GMT_InputState has no internal padding (key arrays size 104*2=208 aligns
-// the int32_t fields naturally), so the binary layout is identical to the
-// original flat field list and file-format compatibility is preserved.
 typedef struct GMT_RawFrameRecord {
-  uint64_t frame_index;
+  double timestamp;  // Seconds since start of recording.
   GMT_InputState input;
 } GMT_RawFrameRecord;
 
 // Body of a TAG_SIGNAL record (written without the tag byte).
 typedef struct GMT_RawSignalRecord {
-  uint64_t frame_index;
+  double timestamp;  // Seconds since start of recording.
   int32_t signal_id;
 } GMT_RawSignalRecord;
 #pragma pack(pop)
@@ -59,12 +56,12 @@ typedef struct GMT_RawSignalRecord {
 // ===== In-memory decoded records (used during REPLAY) =====
 
 typedef struct GMT_DecodedFrame {
-  uint64_t frame_index;
+  double timestamp;  // Seconds since start of recording.
   GMT_InputState input;
 } GMT_DecodedFrame;
 
 typedef struct GMT_DecodedSignal {
-  uint64_t frame_index;
+  double timestamp;  // Seconds since start of recording.
   int32_t signal_id;
 } GMT_DecodedSignal;
 
@@ -89,6 +86,16 @@ typedef struct GMT_State {
   // ----- Runtime -----
   // Monotonically increasing counter incremented by each GMT_Update call.
   uint64_t frame_index;
+
+  // ----- Timing -----
+  // Platform time (seconds) when recording or replay started.
+  // Used as the epoch for all recorded timestamps.
+  double record_start_time;
+  // Accumulated time (seconds) spent waiting for sync signals during replay.
+  // Subtracted from elapsed wall-clock time to produce the effective replay time.
+  double replay_time_offset;
+  // Platform time when the current signal wait began (used to compute offset on unblock).
+  double signal_wait_start;
 
   // ----- RECORD mode -----
   FILE* record_file;  // Open for streaming write while recording.

@@ -73,6 +73,12 @@ bool GMT_Init(const GMT_Setup* setup) {
   }
 
   g_gmt.initialized = true;
+
+  // Start the recording / replay clock.
+  g_gmt.record_start_time = GMT_Platform_GetTime();
+  g_gmt.replay_time_offset = 0.0;
+  g_gmt.signal_wait_start = 0.0;
+
   return true;
 }
 
@@ -151,6 +157,11 @@ void GMT_Reset(void) {
   g_gmt.waiting_for_signal = false;
   g_gmt.waiting_signal_id = 0;
   GMT_InputState_Clear(&g_gmt.replay_prev_input);
+
+  // Reset the recording / replay clock.
+  g_gmt.record_start_time = GMT_Platform_GetTime();
+  g_gmt.replay_time_offset = 0.0;
+  g_gmt.signal_wait_start = 0.0;
 
   GMT_Platform_MutexUnlock();
 }

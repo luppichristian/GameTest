@@ -26,6 +26,10 @@ static volatile LONG g_wheel_y = 0;  // Vertical wheel accumulator.
 
 static CRITICAL_SECTION g_mutex;
 
+// ===== High-Resolution Timer =====
+
+static double g_perf_freq_inv = 0.0;  // 1.0 / QueryPerformanceFrequency
+
 static LRESULT CALLBACK GMT__MouseLLHook(int nCode, WPARAM wParam, LPARAM lParam) {
   if (nCode == HC_ACTION) {
     MSLLHOOKSTRUCT* ms = (MSLLHOOKSTRUCT*)lParam;
@@ -215,8 +219,21 @@ static LRESULT CALLBACK GMT__KeyboardLLHook(int nCode, WPARAM wParam, LPARAM lPa
   return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
 }
 
+double GMT_Platform_GetTime(void) {
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return (double)now.QuadPart * g_perf_freq_inv;
+}
+
 void GMT_Platform_Init(void) {
   InitializeCriticalSection(&g_mutex);
+
+  // Initialize high-resolution timer.
+  {
+    LARGE_INTEGER freq;
+    QueryPerformanceFrequency(&freq);
+    g_perf_freq_inv = 1.0 / (double)freq.QuadPart;
+  }
 
   // Build the VK → GMT_Key reverse map from the forward k_vk[] table.
   memset(g_vk_to_gmt_key, 0, sizeof(g_vk_to_gmt_key));

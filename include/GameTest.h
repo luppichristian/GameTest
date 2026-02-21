@@ -214,10 +214,15 @@ GMT_API void GMT_PrintReport(void);
 
 // ===== Signals & Sync =====
 
-// Synchronizes recording and replay around an event that may take variable time (e.g. loading a menu).
-// In replay mode: emits the signal, allowing replay to proceed until the next sync point.
-// In record mode: waits for the signal before accepting more input.
-// Example: emit the signal when a menu finishes opening so that recorded inputs are never replayed too early.
+// Marks a synchronization point for events that take variable time (e.g. loading screens, menu transitions).
+// Place this call right after the event completes (e.g. when a menu finishes opening).
+//
+// Record mode: writes the signal into the test file at the current timestamp and continues recording.
+// Replay mode: the framework reads sync points from the file and suspends input injection when one is
+//              reached.  When the game calls this function with the matching id, replay resumes and the
+//              internal clock is adjusted so that all subsequent input is played back at the correct
+//              relative timing, regardless of how long the game took to reach this point.
+// Disabled mode: no-op.
 GMT_API void GMT_SyncSignal_(int id, GMT_CodeLocation loc);
 
 #define GMT_SyncSignal(id)           GMT_SyncSignal_(id, GMT_LOCATION())
