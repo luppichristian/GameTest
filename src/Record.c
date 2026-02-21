@@ -121,14 +121,14 @@ bool GMT_Record_LoadReplay(void) {
     return false;
   }
   size_t total = (size_t)file_sz;
-  uint8_t* data = (uint8_t*)malloc(total);
+  uint8_t* data = GMT_Alloc(total);
   if (!data) {
     fclose(f);
     GMT_LogError("GMT_Record: failed to read test file.");
     return false;
   }
   if (fread(data, 1, total, f) != total) {
-    free(data);
+    GMT_Free(data);
     fclose(f);
     GMT_LogError("GMT_Record: failed to read test file.");
     return false;
@@ -234,7 +234,7 @@ bool GMT_Record_LoadReplay(void) {
   ok = true;
 
 cleanup:
-  free(data);
+  GMT_Free(data);
   return ok;
 }
 

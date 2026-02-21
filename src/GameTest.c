@@ -7,7 +7,6 @@
 #include "Internal.h"
 #include "Record.h"
 #include <string.h>
-#include <stdio.h>
 
 // ===== Global state =====
 
@@ -16,8 +15,7 @@ GMT_State g_gmt;
 // ===== Default fail callback =====
 
 static void GMT_DefaultFail(void) {
-  fprintf(stderr, "[GameTest] Test FAILED.  Exiting.\n");
-  fflush(stderr);
+  GMT_LogError("Test FAILED.  Exiting.");
   GMT_PrintReport();
   // Use abort instead of exit so that a debugger can catch it.
   // In CI the process will terminate with a non-zero code either way.

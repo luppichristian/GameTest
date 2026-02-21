@@ -11,7 +11,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
-
+#include "GameTest.h"
 #include "InputState.h"
 
 // ===== Directory =====

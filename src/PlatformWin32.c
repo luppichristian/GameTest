@@ -362,7 +362,7 @@ void GMT_Platform_InjectInput(const GMT_InputState* new_input,
 
   // Allocate: key transitions + repeat key-downs + 5 mouse buttons.
   int capacity = GMT_KEY_COUNT + total_repeat_count + 5;
-  INPUT* inputs = (INPUT*)malloc((size_t)capacity * sizeof(INPUT));
+  INPUT* inputs = GMT_Alloc((size_t)capacity * sizeof(INPUT));
   if (!inputs) return;
   UINT count = 0;
 
@@ -464,7 +464,7 @@ void GMT_Platform_InjectInput(const GMT_InputState* new_input,
   if (count > 0) {
     SendInput(count, inputs, sizeof(INPUT));
   }
-  free(inputs);
+  GMT_Free(inputs);
 
   // ---- Mouse wheel ----
   if (new_input->mouse_wheel_y != 0) {
