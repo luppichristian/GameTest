@@ -73,7 +73,7 @@ if /i "%MODE%"=="record" (
 
 rem ── Run ──────────────────────────────────────────────────────────────────────
 
-echo [%MODE%] %TEST_ARG%  ->  %TEST_FILE%
+echo [%MODE%] %TEST_ARG%  -^>  %TEST_FILE%
 "%EXE%" "--test-mode=%MODE%" "--test=%TEST_FILE%"
 set EXIT_CODE=%ERRORLEVEL%
 

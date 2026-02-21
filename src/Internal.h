@@ -27,7 +27,7 @@
 //
 // All multi-byte integers are little-endian.
 
-#define GMT_RECORD_MAGIC   0x54534D47u  // 'GMST' in memory (little-endian)
+#define GMT_RECORD_MAGIC   0x5447u  // 'GT' in memory (little-endian)
 #define GMT_RECORD_VERSION 2u
 
 #define GMT_RECORD_TAG_INPUT  ((uint8_t)0x01)

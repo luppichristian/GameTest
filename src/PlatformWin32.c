@@ -388,6 +388,7 @@ static HRESULT WINAPI GMT_Hook_DirectInput8Create(HINSTANCE hinst, DWORD dwVersi
 // The replayed input state.  Updated each frame by GMT_Platform_SetReplayedInput.
 // Read by the hooked Win32 functions below.
 static GMT_InputState g_replayed_input;
+static uint8_t g_replayed_toggle_state[256];     // Tracks toggle state (low bit) for keys like Caps Lock.
 static volatile LONG g_replay_hooks_active = 0;  // 1 while hooks should return replayed state.
 
 // WH_GETMESSAGE hook handle (strips WM_INPUT during replay).
@@ -406,10 +407,18 @@ static SHORT WINAPI GMT_Hook_GetAsyncKeyState(int vKey) {
     if (vKey == VK_XBUTTON1) return (g_replayed_input.mouse_buttons & GMT_MouseButton_X1) ? (SHORT)0x8000 : 0;
     if (vKey == VK_XBUTTON2) return (g_replayed_input.mouse_buttons & GMT_MouseButton_X2) ? (SHORT)0x8000 : 0;
 
+    // Generic modifier keys.
+    if (vKey == VK_SHIFT) return ((g_replayed_input.keys[GMT_Key_LEFT_SHIFT] | g_replayed_input.keys[GMT_Key_RIGHT_SHIFT]) & 0x80u) ? (SHORT)0x8000 : 0;
+    if (vKey == VK_CONTROL) return ((g_replayed_input.keys[GMT_Key_LEFT_CTRL] | g_replayed_input.keys[GMT_Key_RIGHT_CTRL]) & 0x80u) ? (SHORT)0x8000 : 0;
+    if (vKey == VK_MENU) return ((g_replayed_input.keys[GMT_Key_LEFT_ALT] | g_replayed_input.keys[GMT_Key_RIGHT_ALT]) & 0x80u) ? (SHORT)0x8000 : 0;
+
     // Keyboard keys.
     int gmt_key = g_vk_to_gmt_key[vKey];
     if (gmt_key > 0 && gmt_key < GMT_KEY_COUNT) {
-      return (g_replayed_input.keys[gmt_key] & 0x80u) ? (SHORT)0x8000 : 0;
+      SHORT state = (g_replayed_input.keys[gmt_key] & 0x80u) ? (SHORT)0x8000 : 0;
+      // GetAsyncKeyState low bit indicates if the key was pressed since the last call.
+      // We don't track this reliably, so just return 0 for the low bit.
+      return state;
     }
     return 0;
   }
@@ -427,9 +436,16 @@ static SHORT WINAPI GMT_Hook_GetKeyState(int nVirtKey) {
     if (nVirtKey == VK_XBUTTON1) return (g_replayed_input.mouse_buttons & GMT_MouseButton_X1) ? (SHORT)0x8000 : 0;
     if (nVirtKey == VK_XBUTTON2) return (g_replayed_input.mouse_buttons & GMT_MouseButton_X2) ? (SHORT)0x8000 : 0;
 
+    // Generic modifier keys.
+    if (nVirtKey == VK_SHIFT) return (((g_replayed_input.keys[GMT_Key_LEFT_SHIFT] | g_replayed_input.keys[GMT_Key_RIGHT_SHIFT]) & 0x80u) ? (SHORT)0x8000 : 0) | g_replayed_toggle_state[VK_SHIFT];
+    if (nVirtKey == VK_CONTROL) return (((g_replayed_input.keys[GMT_Key_LEFT_CTRL] | g_replayed_input.keys[GMT_Key_RIGHT_CTRL]) & 0x80u) ? (SHORT)0x8000 : 0) | g_replayed_toggle_state[VK_CONTROL];
+    if (nVirtKey == VK_MENU) return (((g_replayed_input.keys[GMT_Key_LEFT_ALT] | g_replayed_input.keys[GMT_Key_RIGHT_ALT]) & 0x80u) ? (SHORT)0x8000 : 0) | g_replayed_toggle_state[VK_MENU];
+
     int gmt_key = g_vk_to_gmt_key[nVirtKey];
     if (gmt_key > 0 && gmt_key < GMT_KEY_COUNT) {
-      return (g_replayed_input.keys[gmt_key] & 0x80u) ? (SHORT)0x8000 : 0;
+      SHORT state = (g_replayed_input.keys[gmt_key] & 0x80u) ? (SHORT)0x8000 : 0;
+      state |= g_replayed_toggle_state[nVirtKey];
+      return state;
     }
     return 0;
   }
@@ -445,9 +461,14 @@ static BOOL WINAPI GMT_Hook_GetKeyboardState(PBYTE lpKeyState) {
     for (int k = 1; k < GMT_KEY_COUNT; ++k) {
       int vk = k_vk[k];
       if (vk > 0 && vk < 256) {
-        lpKeyState[vk] = g_replayed_input.keys[k];  // 0x80 if pressed, 0 otherwise.
+        lpKeyState[vk] = g_replayed_input.keys[k] | g_replayed_toggle_state[vk];
       }
     }
+
+    // Set generic modifier keys.
+    lpKeyState[VK_SHIFT] = ((g_replayed_input.keys[GMT_Key_LEFT_SHIFT] | g_replayed_input.keys[GMT_Key_RIGHT_SHIFT]) & 0x80u) | g_replayed_toggle_state[VK_SHIFT];
+    lpKeyState[VK_CONTROL] = ((g_replayed_input.keys[GMT_Key_LEFT_CTRL] | g_replayed_input.keys[GMT_Key_RIGHT_CTRL]) & 0x80u) | g_replayed_toggle_state[VK_CONTROL];
+    lpKeyState[VK_MENU] = ((g_replayed_input.keys[GMT_Key_LEFT_ALT] | g_replayed_input.keys[GMT_Key_RIGHT_ALT]) & 0x80u) | g_replayed_toggle_state[VK_MENU];
 
     // Set mouse button virtual keys.
     if (g_replayed_input.mouse_buttons & GMT_MouseButton_LEFT) lpKeyState[VK_LBUTTON] = 0x80;
@@ -1321,6 +1342,31 @@ void GMT_Platform_RemoveInputHooks(void) {
 
 void GMT_Platform_SetReplayedInput(const GMT_InputState* input) {
   if (input) {
+    // Update toggle states for keys that transitioned from up to down.
+    for (int k = 1; k < GMT_KEY_COUNT; ++k) {
+      int vk = k_vk[k];
+      if (vk > 0 && vk < 256) {
+        bool was_down = (g_replayed_input.keys[k] & 0x80u) != 0;
+        bool is_down = (input->keys[k] & 0x80u) != 0;
+        if (!was_down && is_down) {
+          g_replayed_toggle_state[vk] ^= 1;
+        }
+      }
+    }
+
+    // Update generic modifier toggle states.
+    bool shift_was = ((g_replayed_input.keys[GMT_Key_LEFT_SHIFT] | g_replayed_input.keys[GMT_Key_RIGHT_SHIFT]) & 0x80u) != 0;
+    bool shift_is = ((input->keys[GMT_Key_LEFT_SHIFT] | input->keys[GMT_Key_RIGHT_SHIFT]) & 0x80u) != 0;
+    if (!shift_was && shift_is) g_replayed_toggle_state[VK_SHIFT] ^= 1;
+
+    bool ctrl_was = ((g_replayed_input.keys[GMT_Key_LEFT_CTRL] | g_replayed_input.keys[GMT_Key_RIGHT_CTRL]) & 0x80u) != 0;
+    bool ctrl_is = ((input->keys[GMT_Key_LEFT_CTRL] | input->keys[GMT_Key_RIGHT_CTRL]) & 0x80u) != 0;
+    if (!ctrl_was && ctrl_is) g_replayed_toggle_state[VK_CONTROL] ^= 1;
+
+    bool alt_was = ((g_replayed_input.keys[GMT_Key_LEFT_ALT] | g_replayed_input.keys[GMT_Key_RIGHT_ALT]) & 0x80u) != 0;
+    bool alt_is = ((input->keys[GMT_Key_LEFT_ALT] | input->keys[GMT_Key_RIGHT_ALT]) & 0x80u) != 0;
+    if (!alt_was && alt_is) g_replayed_toggle_state[VK_MENU] ^= 1;
+
     memcpy(&g_replayed_input, input, sizeof(g_replayed_input));
   }
 }
