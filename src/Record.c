@@ -59,6 +59,8 @@ bool GMT_Record_OpenForWrite(void) {
   }
 
   g_gmt.record_file = fh;
+  g_gmt.record_input_count = 0;
+  g_gmt.record_signal_count = 0;
   return true;
 }
 
@@ -85,6 +87,7 @@ void GMT_Record_WriteInput(void) {
   uint8_t tag = GMT_RECORD_TAG_INPUT;
   fwrite(&tag, 1, 1, g_gmt.record_file);
   fwrite(&rec, sizeof(rec), 1, g_gmt.record_file);
+  g_gmt.record_input_count++;
 }
 
 void GMT_Record_WriteSignal(int32_t signal_id) {
@@ -97,6 +100,7 @@ void GMT_Record_WriteSignal(int32_t signal_id) {
   uint8_t tag = GMT_RECORD_TAG_SIGNAL;
   fwrite(&tag, 1, 1, g_gmt.record_file);
   fwrite(&rec, sizeof(rec), 1, g_gmt.record_file);
+  g_gmt.record_signal_count++;
 }
 
 // ===== REPLAY mode =====
@@ -277,11 +281,8 @@ GMT_FileMetrics GMT_Record_GetRecordMetrics(void) {
   m.file_size_bytes = (file_pos >= 0) ? file_pos + 1 : 0;
   m.duration = GMT_Platform_GetTime() - g_gmt.record_start_time;
   m.frame_count = g_gmt.frame_index;
-  /* Estimate input_count from file payload size. */
-  long payload = m.file_size_bytes > (long)sizeof(GMT_FileHeader)
-                     ? m.file_size_bytes - (long)sizeof(GMT_FileHeader)
-                     : 0;
-  m.input_count = (size_t)(payload / (long)(1 + sizeof(GMT_RawInputRecord)));
+  m.input_count = g_gmt.record_input_count;
+  m.signal_count = g_gmt.record_signal_count;
   m.input_density = (m.duration > 0.0) ? (double)m.input_count / m.duration : 0.0;
   return m;
 }
@@ -294,10 +295,10 @@ void GMT_Record_InjectInput(void) {
   double replay_time = (now - g_gmt.record_start_time) - g_gmt.replay_time_offset;
 
   // Process input records and signals in chronological order.
-  // Input records whose timestamp has been reached are consumed; only the latest one
-  // is actually injected (intermediate ones are skipped).  A signal whose
-  // timestamp has been reached gates further injection until the game emits it.
-  GMT_DecodedInput* last_input_to_inject = NULL;
+  // Every input record whose timestamp has been reached is injected individually
+  // so that intermediate key press/release pairs generate proper WM_KEYDOWN /
+  // WM_KEYUP messages for message-pump–based games.  A signal whose timestamp
+  // has been reached gates further injection until the game emits it.
 
   while (1) {
     bool have_input = g_gmt.replay_input_cursor < g_gmt.replay_input_count;
@@ -314,15 +315,6 @@ void GMT_Record_InjectInput(void) {
     if (signal_first) {
       if (st > replay_time) break;  // Signal is in the future; nothing to do yet.
 
-      // Signal's time has been reached.  Inject any accumulated input first, then gate.
-      if (last_input_to_inject) {
-        GMT_Platform_SetReplayedInput(&last_input_to_inject->input);
-        GMT_Platform_InjectInput(&last_input_to_inject->input, &g_gmt.replay_prev_input);
-        g_gmt.replay_prev_input = last_input_to_inject->input;
-        g_gmt.replay_current_input = last_input_to_inject->input;
-        last_input_to_inject = NULL;
-      }
-
       g_gmt.waiting_for_signal = true;
       g_gmt.waiting_signal_id = g_gmt.replay_signals[g_gmt.replay_signal_cursor].signal_id;
       g_gmt.signal_wait_start = now;
@@ -332,19 +324,14 @@ void GMT_Record_InjectInput(void) {
     // Input record comes first.
     if (it > replay_time) break;  // Input record is in the future; stop.
 
-    // Consume the input record (only the last one consumed will actually be injected).
-    last_input_to_inject = &g_gmt.replay_inputs[g_gmt.replay_input_cursor];
+    // Inject this input record.  Every record is injected individually so that
+    // key transitions generate the correct Win32 messages (WM_KEYDOWN, WM_KEYUP,
+    // WM_MOUSEMOVE, etc.) even when multiple records elapse in a single frame.
+    GMT_DecodedInput* di = &g_gmt.replay_inputs[g_gmt.replay_input_cursor];
+    GMT_Platform_SetReplayedInput(&di->input);
+    GMT_Platform_InjectInput(&di->input, &g_gmt.replay_prev_input);
+    g_gmt.replay_prev_input = di->input;
+    g_gmt.replay_current_input = di->input;
     g_gmt.replay_input_cursor++;
-  }
-
-  if (last_input_to_inject) {
-    // Update the replayed state for the IAT-hooked Win32 functions BEFORE
-    // injecting via SendInput.  This ensures that if the game polls input
-    // (GetAsyncKeyState etc.) at any point after GMT_Update returns, it sees
-    // the correct replayed state for this frame.
-    GMT_Platform_SetReplayedInput(&last_input_to_inject->input);
-    GMT_Platform_InjectInput(&last_input_to_inject->input, &g_gmt.replay_prev_input);
-    g_gmt.replay_prev_input = last_input_to_inject->input;
-    g_gmt.replay_current_input = last_input_to_inject->input;
   }
 }

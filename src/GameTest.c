@@ -145,7 +145,9 @@ void GMT_Quit_(void) {
       GMT_LogInfo("  File size:     %ld bytes", m.file_size_bytes);
       GMT_LogInfo("  Duration:      %.2f s", m.duration);
       GMT_LogInfo("  Frames:        %" PRIu64, m.frame_count);
-      GMT_LogInfo("  Input density: ~%.2f records/s (estimate)", m.input_density);
+      GMT_LogInfo("  Input records: %zu", m.input_count);
+      GMT_LogInfo("  Signal records: %zu", m.signal_count);
+      GMT_LogInfo("  Input density: %.2f records/s", m.input_density);
       GMT_Record_CloseWrite();
       break;
     }

@@ -1268,17 +1268,8 @@ void GMT_Platform_InstallInputHooks(void) {
     g_getmessage_hook = SetWindowsHookExA(WH_GETMESSAGE, GMT__GetMessageHook, NULL, GetCurrentThreadId());
   }
 
-  // Install low-level hooks to block real input and accumulate wheel deltas
-  // during replay.  These are system-wide (dwThreadId=0) so they must only be
-  // active while replay is running — installing them unconditionally causes
-  // system-wide input lag because every OS mouse/keyboard event is routed
-  // through this thread's message pump before delivery to any application.
-  if (!g_mouse_hook) {
-    g_mouse_hook = SetWindowsHookExA(WH_MOUSE_LL, GMT__MouseLLHook, NULL, 0);
-  }
-  if (!g_keyboard_hook) {
-    g_keyboard_hook = SetWindowsHookExA(WH_KEYBOARD_LL, GMT__KeyboardLLHook, NULL, 0);
-  }
+  // LL hooks (mouse wheel, keyboard repeat, real-input blocking) are already
+  // installed by GMT_Platform_Init for both RECORD and REPLAY modes.
 }
 
 void GMT_Platform_RemoveInputHooks(void) {
@@ -1401,6 +1392,17 @@ void GMT_Platform_Init(void) {
   }
   memset(g_hook_key_down, 0, sizeof(g_hook_key_down));
   memset((void*)g_key_repeats, 0, sizeof(g_key_repeats));
+
+  // Install low-level mouse and keyboard hooks for wheel-delta and key-repeat
+  // accumulation.  Needed in both RECORD and REPLAY modes: in REPLAY the hooks
+  // also block real (non-injected) events; in RECORD they pass events through
+  // while still accumulating wheel and repeat counters.
+  if (!g_mouse_hook) {
+    g_mouse_hook = SetWindowsHookExA(WH_MOUSE_LL, GMT__MouseLLHook, NULL, 0);
+  }
+  if (!g_keyboard_hook) {
+    g_keyboard_hook = SetWindowsHookExA(WH_KEYBOARD_LL, GMT__KeyboardLLHook, NULL, 0);
+  }
 }
 
 void GMT_Platform_Quit(void) {
@@ -1461,17 +1463,17 @@ bool GMT_Platform_CreateDirRecursive(const char* path) {
 void GMT_Platform_CaptureInput(GMT_InputState* out) {
   // When IAT hooks are installed our own calls would be intercepted too.
   // Call through the saved original pointers to always get real hardware state.
-  PFN_GetKeyboardState fn_gkbs = g_orig_GetKeyboardState ? g_orig_GetKeyboardState : GetKeyboardState;
   PFN_GetCursorPos fn_gcp = g_orig_GetCursorPos ? g_orig_GetCursorPos : GetCursorPos;
   PFN_GetAsyncKeyState fn_gaks = g_orig_GetAsyncKeyState ? g_orig_GetAsyncKeyState : GetAsyncKeyState;
 
-  uint8_t vk_state[256];
-  fn_gkbs(vk_state);
-
+  // Use GetAsyncKeyState (physical hardware state) instead of GetKeyboardState
+  // (message-synchronised state) so that key presses are captured on the frame
+  // they physically occur, not delayed until the message queue is pumped.  This
+  // eliminates a one-frame recording lag that caused replay divergence.
   out->keys[GMT_Key_UNKNOWN] = 0;
   for (int k = 1; k < GMT_KEY_COUNT; ++k) {
     int vk = k_vk[k];
-    out->keys[k] = (vk != 0) ? (vk_state[vk] & 0x80u) : 0;
+    out->keys[k] = (vk != 0 && (fn_gaks(vk) & 0x8000)) ? 0x80u : 0;
   }
 
   // Read and reset per-key repeat accumulators atomically, clamping to uint8_t.

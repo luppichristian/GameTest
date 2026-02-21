@@ -121,6 +121,10 @@ typedef struct GMT_State {
 
   // Previous input state written to disk; used to skip duplicate frames.
   GMT_InputState record_prev_input;
+  // Exact count of input records written during this recording session.
+  size_t record_input_count;
+  // Exact count of signal records written during this recording session.
+  size_t record_signal_count;
 
   // ----- REPLAY mode -----
   GMT_DecodedInput* replay_inputs;
