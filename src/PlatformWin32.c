@@ -1246,6 +1246,18 @@ void GMT_Platform_InstallInputHooks(void) {
   if (!g_getmessage_hook) {
     g_getmessage_hook = SetWindowsHookExA(WH_GETMESSAGE, GMT__GetMessageHook, NULL, GetCurrentThreadId());
   }
+
+  // Install low-level hooks to block real input and accumulate wheel deltas
+  // during replay.  These are system-wide (dwThreadId=0) so they must only be
+  // active while replay is running — installing them unconditionally causes
+  // system-wide input lag because every OS mouse/keyboard event is routed
+  // through this thread's message pump before delivery to any application.
+  if (!g_mouse_hook) {
+    g_mouse_hook = SetWindowsHookExA(WH_MOUSE_LL, GMT__MouseLLHook, NULL, 0);
+  }
+  if (!g_keyboard_hook) {
+    g_keyboard_hook = SetWindowsHookExA(WH_KEYBOARD_LL, GMT__KeyboardLLHook, NULL, 0);
+  }
 }
 
 void GMT_Platform_RemoveInputHooks(void) {
@@ -1295,6 +1307,16 @@ void GMT_Platform_RemoveInputHooks(void) {
     UnhookWindowsHookEx(g_getmessage_hook);
     g_getmessage_hook = NULL;
   }
+
+  // Remove low-level hooks (only active during replay).
+  if (g_mouse_hook) {
+    UnhookWindowsHookEx(g_mouse_hook);
+    g_mouse_hook = NULL;
+  }
+  if (g_keyboard_hook) {
+    UnhookWindowsHookEx(g_keyboard_hook);
+    g_keyboard_hook = NULL;
+  }
 }
 
 void GMT_Platform_SetReplayedInput(const GMT_InputState* input) {
@@ -1333,30 +1355,15 @@ void GMT_Platform_Init(void) {
   }
   memset(g_hook_key_down, 0, sizeof(g_hook_key_down));
   memset((void*)g_key_repeats, 0, sizeof(g_key_repeats));
-
-  if (!g_mouse_hook) {
-    g_mouse_hook = SetWindowsHookExA(WH_MOUSE_LL, GMT__MouseLLHook, NULL, 0);
-  }
-  if (!g_keyboard_hook) {
-    g_keyboard_hook = SetWindowsHookExA(WH_KEYBOARD_LL, GMT__KeyboardLLHook, NULL, 0);
-  }
 }
 
 void GMT_Platform_Quit(void) {
-  // Remove IAT hooks and WH_GETMESSAGE hook before anything else.
+  // Remove IAT hooks, WH_GETMESSAGE hook, and LL hooks before anything else.
+  // RemoveInputHooks also handles the LL hooks when they were installed for replay.
   GMT_Platform_RemoveInputHooks();
 
-  if (g_mouse_hook) {
-    UnhookWindowsHookEx(g_mouse_hook);
-    g_mouse_hook = NULL;
-  }
   g_wheel_x = 0;
   g_wheel_y = 0;
-
-  if (g_keyboard_hook) {
-    UnhookWindowsHookEx(g_keyboard_hook);
-    g_keyboard_hook = NULL;
-  }
   memset(g_hook_key_down, 0, sizeof(g_hook_key_down));
   memset((void*)g_key_repeats, 0, sizeof(g_key_repeats));
 
