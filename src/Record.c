@@ -283,8 +283,10 @@ void GMT_Record_InjectInput(void) {
 
       // Signal's time has been reached.  Inject any accumulated input first, then gate.
       if (last_input_to_inject) {
+        GMT_Platform_SetReplayedInput(&last_input_to_inject->input);
         GMT_Platform_InjectInput(&last_input_to_inject->input, &g_gmt.replay_prev_input);
         g_gmt.replay_prev_input = last_input_to_inject->input;
+        g_gmt.replay_current_input = last_input_to_inject->input;
         last_input_to_inject = NULL;
       }
 
@@ -303,7 +305,13 @@ void GMT_Record_InjectInput(void) {
   }
 
   if (last_input_to_inject) {
+    // Update the replayed state for the IAT-hooked Win32 functions BEFORE
+    // injecting via SendInput.  This ensures that if the game polls input
+    // (GetAsyncKeyState etc.) at any point after GMT_Update returns, it sees
+    // the correct replayed state for this frame.
+    GMT_Platform_SetReplayedInput(&last_input_to_inject->input);
     GMT_Platform_InjectInput(&last_input_to_inject->input, &g_gmt.replay_prev_input);
     g_gmt.replay_prev_input = last_input_to_inject->input;
+    g_gmt.replay_current_input = last_input_to_inject->input;
   }
 }

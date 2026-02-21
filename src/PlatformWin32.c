@@ -2,15 +2,53 @@
  * Platform__Win32.c - Win32 implementation of the platform abstraction layer.
  *
  * Covers: file I/O, directory management, keyboard/mouse capture and injection,
- * and CRITICAL_SECTION-based mutual exclusion.
+ * IAT-based Win32 input hooking for transparent replay, and CRITICAL_SECTION-
+ * based mutual exclusion.
+ *
+ * == Replay input interception ==
+ *
+ * During REPLAY mode, every way a Win32 game can read input is intercepted:
+ *
+ *   Layer 1 — Low-level hooks (WH_KEYBOARD_LL, WH_MOUSE_LL)
+ *     Block ALL real (non-injected) keyboard and mouse events so they never
+ *     reach the application's message queue.  Injected events produced by
+ *     SendInput pass through because they carry the LLKHF_INJECTED /
+ *     LLMHF_INJECTED flag.
+ *
+ *   Layer 2 — IAT hooking
+ *     Patches the Import Address Table of every loaded module to redirect
+ *     GetAsyncKeyState, GetKeyState, GetKeyboardState, and GetCursorPos to
+ *     our implementations that return the replayed input state.  This ensures
+ *     polling-based games see replayed state regardless of timing.
+ *
+ *   Layer 3 — WH_GETMESSAGE hook
+ *     Strips WM_INPUT (Raw Input) messages during replay.  Real WM_INPUT
+ *     messages bypass LL hooks, so this layer catches them.
+ *
+ *   Layer 4 — SendInput injection
+ *     Keyboards and mouse button deltas are injected via SendInput so that
+ *     message-pump based games (PeekMessage / GetMessage → DispatchMessage)
+ *     receive the correct WM_KEYDOWN, WM_MOUSEMOVE, etc. events.  Mouse
+ *     movement uses MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE so the resulting
+ *     events are flagged as injected and pass through the LL hooks.
+ *
+ * Together these four layers cover:
+ *   - PeekMessage / GetMessage / DispatchMessage  (message-pump games)
+ *   - GetAsyncKeyState                            (polling games)
+ *   - GetKeyState / GetKeyboardState               (synchronised-state games)
+ *   - GetCursorPos                                 (cursor polling)
+ *   - Raw Input (WM_INPUT / GetRawInputData)       (stripped; no real data)
  */
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
+#include <psapi.h> /* EnumProcessModules */
+#include <xinput.h>
 #include <stdlib.h>
 #include <string.h>
 
+#include "Internal.h"
 #include "Platform.h"
 
 // ===== Mouse Wheel Accumulator =====
@@ -33,6 +71,17 @@ static double g_perf_freq_inv = 0.0;  // 1.0 / QueryPerformanceFrequency
 static LRESULT CALLBACK GMT__MouseLLHook(int nCode, WPARAM wParam, LPARAM lParam) {
   if (nCode == HC_ACTION) {
     MSLLHOOKSTRUCT* ms = (MSLLHOOKSTRUCT*)lParam;
+
+    // In REPLAY mode, block ALL real (non-injected) mouse events so that the
+    // user's physical mouse cannot interfere with the replayed input.  Injected
+    // events produced by our own SendInput calls carry LLMHF_INJECTED and are
+    // allowed through.
+    if (g_gmt.initialized && g_gmt.mode == GMT_Mode_REPLAY) {
+      if (!(ms->flags & LLMHF_INJECTED)) {
+        return 1;  // Swallow real mouse event.
+      }
+    }
+
     if (wParam == WM_MOUSEWHEEL) {
       SHORT delta = (SHORT)HIWORD(ms->mouseData);
       InterlockedExchangeAdd(&g_wheel_y, (LONG)delta);
@@ -196,7 +245,17 @@ static uint8_t g_hook_key_down[256];                // Per-VK "is currently down
 static LRESULT CALLBACK GMT__KeyboardLLHook(int nCode, WPARAM wParam, LPARAM lParam) {
   if (nCode == HC_ACTION) {
     KBDLLHOOKSTRUCT* kb = (KBDLLHOOKSTRUCT*)lParam;
-    // Ignore events injected by our own replay to avoid feedback.
+
+    // In REPLAY mode, block ALL real (non-injected) keyboard events so that
+    // physical keys never reach the application's message queue.
+    if (g_gmt.initialized && g_gmt.mode == GMT_Mode_REPLAY) {
+      if (!(kb->flags & LLKHF_INJECTED)) {
+        return 1;  // Swallow real keyboard event.
+      }
+    }
+
+    // RECORD mode (and any injected-event bookkeeping during REPLAY):
+    // count auto-repeat key-down events, ignoring injected events.
     if (!(kb->flags & LLKHF_INJECTED)) {
       DWORD vk = kb->vkCode;
       if (vk < 256) {
@@ -217,6 +276,1035 @@ static LRESULT CALLBACK GMT__KeyboardLLHook(int nCode, WPARAM wParam, LPARAM lPa
     }
   }
   return CallNextHookEx(g_keyboard_hook, nCode, wParam, lParam);
+}
+
+// ===== IAT Hooking Infrastructure =====
+//
+// Patches the Import Address Table (IAT) of a loaded PE module to redirect an
+// imported function to a replacement.  This allows us to transparently intercept
+// Win32 input-polling calls (GetAsyncKeyState, GetKeyState, GetKeyboardState,
+// GetCursorPos) so that during replay they return the replayed state instead of
+// the real hardware state.
+//
+// The original function pointer is saved so that (a) we can restore it on
+// shutdown and (b) our own code can call through to the real implementation
+// when recording or running normally.
+
+// Saved original function pointers (populated before any patching).
+typedef SHORT(WINAPI* PFN_GetAsyncKeyState)(int vKey);
+typedef SHORT(WINAPI* PFN_GetKeyState)(int nVirtKey);
+typedef BOOL(WINAPI* PFN_GetKeyboardState)(PBYTE lpKeyState);
+typedef BOOL(WINAPI* PFN_GetCursorPos)(LPPOINT lpPoint);
+typedef UINT(WINAPI* PFN_GetRawInputData)(HRAWINPUT hRawInput, UINT uiCommand, LPVOID pData, PUINT pcbSize, UINT cbSizeHeader);
+
+static PFN_GetAsyncKeyState g_orig_GetAsyncKeyState = NULL;
+static PFN_GetKeyState g_orig_GetKeyState = NULL;
+static PFN_GetKeyboardState g_orig_GetKeyboardState = NULL;
+static PFN_GetCursorPos g_orig_GetCursorPos = NULL;
+static PFN_GetRawInputData g_orig_GetRawInputData = NULL;
+
+// ---- XInput hooking ----
+//
+// XInput is the dominant gamepad API on Windows.  We hook XInputGetState (and
+// XInputGetCapabilities / XInputGetKeystroke) via IAT so that during replay the
+// game sees the replayed gamepad state instead of real hardware.
+//
+// During RECORD mode the hooks call through to the original functions so we
+// can capture real controller state.
+
+typedef DWORD(WINAPI* PFN_XInputGetState)(DWORD dwUserIndex, XINPUT_STATE* pState);
+typedef DWORD(WINAPI* PFN_XInputSetState)(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration);
+typedef DWORD(WINAPI* PFN_XInputGetCapabilities)(DWORD dwUserIndex, DWORD dwFlags, XINPUT_CAPABILITIES* pCapabilities);
+typedef DWORD(WINAPI* PFN_XInputGetKeystroke)(DWORD dwUserIndex, DWORD dwReserved, PXINPUT_KEYSTROKE pKeystroke);
+
+static PFN_XInputGetState g_orig_XInputGetState = NULL;
+static PFN_XInputSetState g_orig_XInputSetState = NULL;
+static PFN_XInputGetCapabilities g_orig_XInputGetCapabilities = NULL;
+static PFN_XInputGetKeystroke g_orig_XInputGetKeystroke = NULL;
+
+// ---- DirectInput hooking ----
+//
+// DirectInput8Create is the factory entry point.  During replay we hook it via
+// IAT.  When the game calls it, we let the real DI8 create the real object, then
+// wrap the returned IDirectInput8 in a proxy that intercepts CreateDevice.  The
+// proxy's CreateDevice wraps each IDirectInputDevice8 so that GetDeviceState and
+// GetDeviceData return replayed gamepad state for game-controller devices while
+// delegating everything else (keyboard, mouse — already covered by other hooks)
+// to the real device.
+//
+// We define the COM GUIDs and vtable layouts ourselves so we don't require the
+// DirectInput SDK headers to be installed (they aren't in the Windows SDK since
+// Windows 8).  The ABI is stable.
+
+// Minimal GUID comparison.
+typedef struct GMT_GUID {
+  uint32_t Data1;
+  uint16_t Data2;
+  uint16_t Data3;
+  uint8_t Data4[8];
+} GMT_GUID;
+
+static bool GMT__GuidEqual(const GMT_GUID* a, const GMT_GUID* b) {
+  return memcmp(a, b, sizeof(GMT_GUID)) == 0;
+}
+
+// IID_IDirectInput8A  = {BF798030-483A-4DA2-AA99-5D64ED369700}
+// IID_IDirectInput8W  = {BF798031-483A-4DA2-AA99-5D64ED369700}
+static const GMT_GUID k_IID_IDirectInput8A = {
+    0xBF798030,
+    0x483A,
+    0x4DA2,
+    {0xAA, 0x99, 0x5D, 0x64, 0xED, 0x36, 0x97, 0x00}
+};
+static const GMT_GUID k_IID_IDirectInput8W = {
+    0xBF798031,
+    0x483A,
+    0x4DA2,
+    {0xAA, 0x99, 0x5D, 0x64, 0xED, 0x36, 0x97, 0x00}
+};
+
+// GUID_SysKeyboard = {6F1D2B61-D5A0-11CF-BFC7-444553540000}
+// GUID_SysMouse    = {6F1D2B60-D5A0-11CF-BFC7-444553540000}
+static const GMT_GUID k_GUID_SysKeyboard = {
+    0x6F1D2B61,
+    0xD5A0,
+    0x11CF,
+    {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}
+};
+static const GMT_GUID k_GUID_SysMouse = {
+    0x6F1D2B60,
+    0xD5A0,
+    0x11CF,
+    {0xBF, 0xC7, 0x44, 0x45, 0x53, 0x54, 0x00, 0x00}
+};
+
+// DirectInput8Create function pointer type.
+typedef HRESULT(WINAPI* PFN_DirectInput8Create)(HINSTANCE hinst, DWORD dwVersion, const GMT_GUID* riidltf, void** ppvOut, void* punkOuter);
+static PFN_DirectInput8Create g_orig_DirectInput8Create = NULL;
+
+// ---- Forward declarations for DI8 wrappers (defined later) ----
+static HRESULT WINAPI GMT_Hook_DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, const GMT_GUID* riidltf, void** ppvOut, void* punkOuter);
+
+// The replayed input state.  Updated each frame by GMT_Platform_SetReplayedInput.
+// Read by the hooked Win32 functions below.
+static GMT_InputState g_replayed_input;
+static volatile LONG g_replay_hooks_active = 0;  // 1 while hooks should return replayed state.
+
+// WH_GETMESSAGE hook handle (strips WM_INPUT during replay).
+static HHOOK g_getmessage_hook = NULL;
+
+// ---- Hooked Win32 function implementations ----
+
+static SHORT WINAPI GMT_Hook_GetAsyncKeyState(int vKey) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    if (vKey < 0 || vKey >= 256) return 0;
+
+    // Mouse button virtual keys.
+    if (vKey == VK_LBUTTON) return (g_replayed_input.mouse_buttons & GMT_MouseButton_LEFT) ? (SHORT)0x8000 : 0;
+    if (vKey == VK_RBUTTON) return (g_replayed_input.mouse_buttons & GMT_MouseButton_RIGHT) ? (SHORT)0x8000 : 0;
+    if (vKey == VK_MBUTTON) return (g_replayed_input.mouse_buttons & GMT_MouseButton_MIDDLE) ? (SHORT)0x8000 : 0;
+    if (vKey == VK_XBUTTON1) return (g_replayed_input.mouse_buttons & GMT_MouseButton_X1) ? (SHORT)0x8000 : 0;
+    if (vKey == VK_XBUTTON2) return (g_replayed_input.mouse_buttons & GMT_MouseButton_X2) ? (SHORT)0x8000 : 0;
+
+    // Keyboard keys.
+    int gmt_key = g_vk_to_gmt_key[vKey];
+    if (gmt_key > 0 && gmt_key < GMT_KEY_COUNT) {
+      return (g_replayed_input.keys[gmt_key] & 0x80u) ? (SHORT)0x8000 : 0;
+    }
+    return 0;
+  }
+  return g_orig_GetAsyncKeyState(vKey);
+}
+
+static SHORT WINAPI GMT_Hook_GetKeyState(int nVirtKey) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    if (nVirtKey < 0 || nVirtKey >= 256) return 0;
+
+    // Mouse button virtual keys.
+    if (nVirtKey == VK_LBUTTON) return (g_replayed_input.mouse_buttons & GMT_MouseButton_LEFT) ? (SHORT)0x8000 : 0;
+    if (nVirtKey == VK_RBUTTON) return (g_replayed_input.mouse_buttons & GMT_MouseButton_RIGHT) ? (SHORT)0x8000 : 0;
+    if (nVirtKey == VK_MBUTTON) return (g_replayed_input.mouse_buttons & GMT_MouseButton_MIDDLE) ? (SHORT)0x8000 : 0;
+    if (nVirtKey == VK_XBUTTON1) return (g_replayed_input.mouse_buttons & GMT_MouseButton_X1) ? (SHORT)0x8000 : 0;
+    if (nVirtKey == VK_XBUTTON2) return (g_replayed_input.mouse_buttons & GMT_MouseButton_X2) ? (SHORT)0x8000 : 0;
+
+    int gmt_key = g_vk_to_gmt_key[nVirtKey];
+    if (gmt_key > 0 && gmt_key < GMT_KEY_COUNT) {
+      return (g_replayed_input.keys[gmt_key] & 0x80u) ? (SHORT)0x8000 : 0;
+    }
+    return 0;
+  }
+  return g_orig_GetKeyState(nVirtKey);
+}
+
+static BOOL WINAPI GMT_Hook_GetKeyboardState(PBYTE lpKeyState) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    if (!lpKeyState) return FALSE;
+    memset(lpKeyState, 0, 256);
+
+    // Set keyboard keys from replayed state.
+    for (int k = 1; k < GMT_KEY_COUNT; ++k) {
+      int vk = k_vk[k];
+      if (vk > 0 && vk < 256) {
+        lpKeyState[vk] = g_replayed_input.keys[k];  // 0x80 if pressed, 0 otherwise.
+      }
+    }
+
+    // Set mouse button virtual keys.
+    if (g_replayed_input.mouse_buttons & GMT_MouseButton_LEFT) lpKeyState[VK_LBUTTON] = 0x80;
+    if (g_replayed_input.mouse_buttons & GMT_MouseButton_RIGHT) lpKeyState[VK_RBUTTON] = 0x80;
+    if (g_replayed_input.mouse_buttons & GMT_MouseButton_MIDDLE) lpKeyState[VK_MBUTTON] = 0x80;
+    if (g_replayed_input.mouse_buttons & GMT_MouseButton_X1) lpKeyState[VK_XBUTTON1] = 0x80;
+    if (g_replayed_input.mouse_buttons & GMT_MouseButton_X2) lpKeyState[VK_XBUTTON2] = 0x80;
+
+    return TRUE;
+  }
+  return g_orig_GetKeyboardState(lpKeyState);
+}
+
+static BOOL WINAPI GMT_Hook_GetCursorPos(LPPOINT lpPoint) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    if (!lpPoint) return FALSE;
+    lpPoint->x = g_replayed_input.mouse_x;
+    lpPoint->y = g_replayed_input.mouse_y;
+    return TRUE;
+  }
+  return g_orig_GetCursorPos(lpPoint);
+}
+
+static UINT WINAPI GMT_Hook_GetRawInputData(HRAWINPUT hRawInput, UINT uiCommand, LPVOID pData, PUINT pcbSize, UINT cbSizeHeader) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    // During replay, report no raw input data.  Games that rely exclusively on
+    // Raw Input are still covered by the IAT hooks on GetAsyncKeyState etc. and
+    // the SendInput-based message injection.
+    if (pcbSize) *pcbSize = 0;
+    return 0;
+  }
+  return g_orig_GetRawInputData(hRawInput, uiCommand, pData, pcbSize, cbSizeHeader);
+}
+
+// ---- XInput hook implementations ----
+
+static DWORD WINAPI GMT_Hook_XInputGetState(DWORD dwUserIndex, XINPUT_STATE* pState) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    if (dwUserIndex >= GMT_MAX_GAMEPADS || !pState) return ERROR_DEVICE_NOT_CONNECTED;
+
+    const GMT_GamepadState* gp = &g_replayed_input.gamepads[dwUserIndex];
+    if (!gp->connected) return ERROR_DEVICE_NOT_CONNECTED;
+
+    // Map GMT_GamepadState → XINPUT_STATE.
+    memset(pState, 0, sizeof(*pState));
+    pState->dwPacketNumber = (DWORD)g_gmt.frame_index;
+    pState->Gamepad.wButtons = gp->buttons;
+    pState->Gamepad.bLeftTrigger = gp->left_trigger;
+    pState->Gamepad.bRightTrigger = gp->right_trigger;
+    pState->Gamepad.sThumbLX = gp->left_stick_x;
+    pState->Gamepad.sThumbLY = gp->left_stick_y;
+    pState->Gamepad.sThumbRX = gp->right_stick_x;
+    pState->Gamepad.sThumbRY = gp->right_stick_y;
+    return ERROR_SUCCESS;
+  }
+  return g_orig_XInputGetState ? g_orig_XInputGetState(dwUserIndex, pState) : ERROR_DEVICE_NOT_CONNECTED;
+}
+
+static DWORD WINAPI GMT_Hook_XInputSetState(DWORD dwUserIndex, XINPUT_VIBRATION* pVibration) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    // During replay, silently succeed — no real vibration.
+    if (dwUserIndex >= GMT_MAX_GAMEPADS) return ERROR_DEVICE_NOT_CONNECTED;
+    if (!g_replayed_input.gamepads[dwUserIndex].connected) return ERROR_DEVICE_NOT_CONNECTED;
+    return ERROR_SUCCESS;
+  }
+  return g_orig_XInputSetState ? g_orig_XInputSetState(dwUserIndex, pVibration) : ERROR_DEVICE_NOT_CONNECTED;
+}
+
+static DWORD WINAPI GMT_Hook_XInputGetCapabilities(DWORD dwUserIndex, DWORD dwFlags, XINPUT_CAPABILITIES* pCapabilities) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    if (dwUserIndex >= GMT_MAX_GAMEPADS || !pCapabilities) return ERROR_DEVICE_NOT_CONNECTED;
+    if (!g_replayed_input.gamepads[dwUserIndex].connected) return ERROR_DEVICE_NOT_CONNECTED;
+
+    // Report a standard Xbox 360-style controller.
+    memset(pCapabilities, 0, sizeof(*pCapabilities));
+    pCapabilities->Type = XINPUT_DEVTYPE_GAMEPAD;
+    pCapabilities->SubType = XINPUT_DEVSUBTYPE_GAMEPAD;
+    pCapabilities->Flags = 0;
+    // Report full range capabilities.
+    pCapabilities->Gamepad.wButtons = 0xFFFF;
+    pCapabilities->Gamepad.bLeftTrigger = 0xFF;
+    pCapabilities->Gamepad.bRightTrigger = 0xFF;
+    pCapabilities->Gamepad.sThumbLX = (SHORT)0x7FFF;
+    pCapabilities->Gamepad.sThumbLY = (SHORT)0x7FFF;
+    pCapabilities->Gamepad.sThumbRX = (SHORT)0x7FFF;
+    pCapabilities->Gamepad.sThumbRY = (SHORT)0x7FFF;
+    pCapabilities->Vibration.wLeftMotorSpeed = 0xFFFF;
+    pCapabilities->Vibration.wRightMotorSpeed = 0xFFFF;
+    return ERROR_SUCCESS;
+  }
+  return g_orig_XInputGetCapabilities ? g_orig_XInputGetCapabilities(dwUserIndex, dwFlags, pCapabilities) : ERROR_DEVICE_NOT_CONNECTED;
+}
+
+static DWORD WINAPI GMT_Hook_XInputGetKeystroke(DWORD dwUserIndex, DWORD dwReserved, PXINPUT_KEYSTROKE pKeystroke) {
+  if (InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    // No keystroke data during replay.
+    return ERROR_EMPTY;
+  }
+  return g_orig_XInputGetKeystroke ? g_orig_XInputGetKeystroke(dwUserIndex, dwReserved, pKeystroke) : ERROR_DEVICE_NOT_CONNECTED;
+}
+
+// ---- DirectInput8 COM wrappers ----
+//
+// We wrap the real IDirectInput8 and IDirectInputDevice8 COM objects so that
+// gamepad devices return replayed state from GetDeviceState / GetDeviceData
+// while all other calls (and non-gamepad devices) delegate to the real objects.
+
+// DIJOYSTATE2 layout — the default data format for joysticks in DirectInput.
+// We only need to fill it; we don't need the full DI headers.
+#pragma pack(push, 1)
+typedef struct GMT_DIJOYSTATE2 {
+  LONG lX, lY, lZ;
+  LONG lRx, lRy, lRz;
+  LONG rglSlider[2];
+  DWORD rgdwPOV[4];
+  BYTE rgbButtons[128];
+  LONG lVX, lVY, lVZ;
+  LONG lVRx, lVRy, lVRz;
+  LONG rglVSlider[2];
+  LONG lAX, lAY, lAZ;
+  LONG lARx, lARy, lARz;
+  LONG rglASlider[2];
+  LONG lFX, lFY, lFZ;
+  LONG lFRx, lFRy, lFRz;
+  LONG rglFSlider[2];
+} GMT_DIJOYSTATE2;
+#pragma pack(pop)
+
+// IDirectInputDevice8 vtable indices (same for A and W variants).
+// The COM vtable is a flat array of function pointers; these indices are stable.
+enum {
+  GMT_DID8_QueryInterface = 0,
+  GMT_DID8_AddRef = 1,
+  GMT_DID8_Release = 2,
+  GMT_DID8_GetCapabilities = 3,
+  GMT_DID8_EnumObjects = 4,
+  GMT_DID8_GetProperty = 5,
+  GMT_DID8_SetProperty = 6,
+  GMT_DID8_Acquire = 7,
+  GMT_DID8_Unacquire = 8,
+  GMT_DID8_GetDeviceState = 9,
+  GMT_DID8_GetDeviceData = 10,
+  GMT_DID8_SetDataFormat = 11,
+  GMT_DID8_SetEventNotification = 12,
+  GMT_DID8_SetCooperativeLevel = 13,
+  GMT_DID8_GetObjectInfo = 14,
+  GMT_DID8_GetDeviceInfo = 15,
+  GMT_DID8_RunControlPanel = 16,
+  GMT_DID8_Initialize = 17,
+  GMT_DID8_CreateEffect = 18,
+  GMT_DID8_EnumEffects = 19,
+  GMT_DID8_GetEffectInfo = 20,
+  GMT_DID8_GetForceFeedbackState = 21,
+  GMT_DID8_SendForceFeedbackCommand = 22,
+  GMT_DID8_EnumCreatedEffectObjects = 23,
+  GMT_DID8_Escape = 24,
+  GMT_DID8_Poll = 25,
+  GMT_DID8_SendDeviceData = 26,
+  GMT_DID8_EnumEffectsInFile = 27,
+  GMT_DID8_WriteEffectToFile = 28,
+  GMT_DID8_BuildActionMap = 29,
+  GMT_DID8_SetActionMap = 30,
+  GMT_DID8_GetImageInfo = 31,
+  GMT_DID8_VTABLE_SIZE = 32,
+};
+
+// IDirectInput8 vtable indices.
+enum {
+  GMT_DI8_QueryInterface = 0,
+  GMT_DI8_AddRef = 1,
+  GMT_DI8_Release = 2,
+  GMT_DI8_CreateDevice = 3,
+  GMT_DI8_EnumDevices = 4,
+  GMT_DI8_GetDeviceStatus = 5,
+  GMT_DI8_RunControlPanel = 6,
+  GMT_DI8_Initialize = 7,
+  GMT_DI8_FindDevice = 8,
+  GMT_DI8_EnumDevicesBySemantics = 9,
+  GMT_DI8_ConfigureDevices = 10,
+  GMT_DI8_VTABLE_SIZE = 11,
+};
+
+// ---- IDirectInputDevice8 Wrapper ----
+
+typedef struct GMT_DIDeviceWrapper {
+  void** vtable;       // Points to our custom vtable below.
+  void* real_device;   // The real IDirectInputDevice8*.
+  void** real_vtable;  // Cached pointer to the real object's vtable.
+  LONG ref_count;
+  int gamepad_index;        // Which GMT_MAX_GAMEPADS slot this maps to (-1 = not a gamepad).
+  bool is_gamepad;          // True if this device was identified as a game controller.
+  size_t data_format_size;  // Size of the data format set by SetDataFormat.
+} GMT_DIDeviceWrapper;
+
+// Helper: get the wrapper from a "this" pointer (first arg to every COM method).
+#define GMT_DID_WRAPPER(p) ((GMT_DIDeviceWrapper*)(p))
+
+// We keep a small counter to assign gamepad indices to DI devices.
+static volatile LONG g_di_gamepad_counter = 0;
+
+// All device wrapper COM methods: delegate to real device, except GetDeviceState / GetDeviceData.
+// We use a macro to generate simple forwarding thunks.
+
+// Generic forwarder: calls real_vtable[index](real_device, ...).
+// For variadic COM methods we just forward using the real device pointer and vtable.
+// NOTE: COM methods use __stdcall on x86 and the default calling convention (__fastcall-like)
+// on x64.  Since we replace the vtable pointer, "this" in the wrapper IS our wrapper struct,
+// and we need to substitute the real pointer.
+
+// For simplicity and correctness across 32/64-bit, we implement each method we care about
+// explicitly and forward the rest through a helper.
+
+typedef HRESULT(WINAPI* PFN_COMGeneric)(void* pThis);
+
+// Forward declaration of the wrapper vtable.
+static void* g_di_device_vtable[GMT_DID8_VTABLE_SIZE];
+static bool g_di_device_vtable_initialized = false;
+
+// Helper to build a DIJOYSTATE2 from replayed gamepad state.
+static void GMT__FillDIJoyState2(GMT_DIJOYSTATE2* js, const GMT_GamepadState* gp) {
+  memset(js, 0, sizeof(*js));
+
+  if (!gp->connected) return;
+
+  // Map thumbsticks: XInput [-32768, 32767] → DI [-1000, 1000] (default range).
+  js->lX = (LONG)(((double)gp->left_stick_x / 32767.0) * 1000.0);
+  js->lY = (LONG)(((double)-gp->left_stick_y / 32767.0) * 1000.0);  // DI Y is inverted vs XInput.
+  js->lRx = (LONG)(((double)gp->right_stick_x / 32767.0) * 1000.0);
+  js->lRy = (LONG)(((double)-gp->right_stick_y / 32767.0) * 1000.0);
+  js->lZ = (LONG)(((double)(gp->right_trigger - gp->left_trigger) / 255.0) * 1000.0);
+
+  // Triggers as separate axes in slider[0] and slider[1].
+  js->rglSlider[0] = (LONG)(((double)gp->left_trigger / 255.0) * 1000.0);
+  js->rglSlider[1] = (LONG)(((double)gp->right_trigger / 255.0) * 1000.0);
+
+  // D-pad → POV hat (0 = up, in hundredths of a degree, -1 = centred).
+  if (gp->buttons & GMT_GamepadButton_DPAD_UP) {
+    if (gp->buttons & GMT_GamepadButton_DPAD_RIGHT) js->rgdwPOV[0] = 4500;
+    else if (gp->buttons & GMT_GamepadButton_DPAD_LEFT)
+      js->rgdwPOV[0] = 31500;
+    else
+      js->rgdwPOV[0] = 0;
+  } else if (gp->buttons & GMT_GamepadButton_DPAD_DOWN) {
+    if (gp->buttons & GMT_GamepadButton_DPAD_RIGHT) js->rgdwPOV[0] = 13500;
+    else if (gp->buttons & GMT_GamepadButton_DPAD_LEFT)
+      js->rgdwPOV[0] = 22500;
+    else
+      js->rgdwPOV[0] = 18000;
+  } else if (gp->buttons & GMT_GamepadButton_DPAD_RIGHT) {
+    js->rgdwPOV[0] = 9000;
+  } else if (gp->buttons & GMT_GamepadButton_DPAD_LEFT) {
+    js->rgdwPOV[0] = 27000;
+  } else {
+    js->rgdwPOV[0] = (DWORD)-1;  // Centred.
+  }
+  js->rgdwPOV[1] = js->rgdwPOV[2] = js->rgdwPOV[3] = (DWORD)-1;
+
+  // Buttons (A=0, B=1, X=2, Y=3, LB=4, RB=5, Back=6, Start=7, LT=8, RT=9, Guide=10).
+  if (gp->buttons & GMT_GamepadButton_A) js->rgbButtons[0] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_B) js->rgbButtons[1] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_X) js->rgbButtons[2] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_Y) js->rgbButtons[3] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_LEFT_SHOULDER) js->rgbButtons[4] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_RIGHT_SHOULDER) js->rgbButtons[5] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_BACK) js->rgbButtons[6] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_START) js->rgbButtons[7] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_LEFT_THUMB) js->rgbButtons[8] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_RIGHT_THUMB) js->rgbButtons[9] = 0x80;
+  if (gp->buttons & GMT_GamepadButton_GUIDE) js->rgbButtons[10] = 0x80;
+}
+
+// --- COM method implementations for the device wrapper ---
+
+static HRESULT WINAPI GMT_DIDev_QueryInterface(void* pThis, const GMT_GUID* riid, void** ppvObject) {
+  GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);
+  typedef HRESULT(WINAPI * Fn)(void*, const GMT_GUID*, void**);
+  HRESULT hr = ((Fn)w->real_vtable[GMT_DID8_QueryInterface])(w->real_device, riid, ppvObject);
+  if (SUCCEEDED(hr) && ppvObject && *ppvObject == w->real_device) {
+    // Return ourselves instead of the real device.
+    *ppvObject = pThis;
+    InterlockedIncrement(&w->ref_count);
+  }
+  return hr;
+}
+
+static ULONG WINAPI GMT_DIDev_AddRef(void* pThis) {
+  GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);
+  return (ULONG)InterlockedIncrement(&w->ref_count);
+}
+
+static ULONG WINAPI GMT_DIDev_Release(void* pThis) {
+  GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);
+  LONG rc = InterlockedDecrement(&w->ref_count);
+  if (rc <= 0) {
+    // Release the real device.
+    typedef ULONG(WINAPI * Fn)(void*);
+    ((Fn)w->real_vtable[GMT_DID8_Release])(w->real_device);
+    GMT_Free(w);
+    return 0;
+  }
+  return (ULONG)rc;
+}
+
+static HRESULT WINAPI GMT_DIDev_GetDeviceState(void* pThis, DWORD cbData, void* lpvData) {
+  GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);
+
+  if (w->is_gamepad && InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    if (!lpvData) return E_POINTER;
+    // Fill with replayed gamepad state.
+    int idx = w->gamepad_index;
+    if (idx < 0 || idx >= GMT_MAX_GAMEPADS) idx = 0;
+    const GMT_GamepadState* gp = &g_replayed_input.gamepads[idx];
+
+    if (cbData >= sizeof(GMT_DIJOYSTATE2)) {
+      GMT_DIJOYSTATE2 js;
+      GMT__FillDIJoyState2(&js, gp);
+      memset(lpvData, 0, cbData);
+      memcpy(lpvData, &js, sizeof(js));
+    } else {
+      // Smaller data format; fill what we can.
+      GMT_DIJOYSTATE2 js;
+      GMT__FillDIJoyState2(&js, gp);
+      memset(lpvData, 0, cbData);
+      memcpy(lpvData, &js, cbData < sizeof(js) ? cbData : sizeof(js));
+    }
+    return S_OK;
+  }
+
+  typedef HRESULT(WINAPI * Fn)(void*, DWORD, void*);
+  return ((Fn)w->real_vtable[GMT_DID8_GetDeviceState])(w->real_device, cbData, lpvData);
+}
+
+static HRESULT WINAPI GMT_DIDev_GetDeviceData(void* pThis, DWORD cbObjectData, void* rgdod, DWORD* pdwInOut, DWORD dwFlags) {
+  GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);
+
+  if (w->is_gamepad && InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    // During replay, report no buffered data.
+    if (pdwInOut) *pdwInOut = 0;
+    return S_OK;
+  }
+
+  typedef HRESULT(WINAPI * Fn)(void*, DWORD, void*, DWORD*, DWORD);
+  return ((Fn)w->real_vtable[GMT_DID8_GetDeviceData])(w->real_device, cbObjectData, rgdod, pdwInOut, dwFlags);
+}
+
+static HRESULT WINAPI GMT_DIDev_Poll(void* pThis) {
+  GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);
+  if (w->is_gamepad && InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    return S_OK;  // No-op during replay.
+  }
+  typedef HRESULT(WINAPI * Fn)(void*);
+  return ((Fn)w->real_vtable[GMT_DID8_Poll])(w->real_device);
+}
+
+static HRESULT WINAPI GMT_DIDev_SetDataFormat(void* pThis, const void* lpdf) {
+  GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);
+  // Track the data format size if available.
+  // The DIDATAFORMAT struct's first DWORD is dwSize, second is dwObjSize, third is dwFlags, fourth is dwDataSize.
+  if (lpdf) {
+    const DWORD* p = (const DWORD*)lpdf;
+    // dwDataSize is at offset 12 (4th DWORD).
+    w->data_format_size = (size_t)p[3];
+  }
+  typedef HRESULT(WINAPI * Fn)(void*, const void*);
+  return ((Fn)w->real_vtable[GMT_DID8_SetDataFormat])(w->real_device, lpdf);
+}
+
+// Generic forwarder macro for methods we don't need to intercept.
+// We generate thunks that swap "this" to the real device and call through.
+#define GMT_DI_FORWARD_0(NAME, IDX)                     \
+  static HRESULT WINAPI GMT_DIDev_##NAME(void* pThis) { \
+    GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);    \
+    typedef HRESULT(WINAPI* Fn)(void*);                 \
+    return ((Fn)w->real_vtable[IDX])(w->real_device);   \
+  }
+
+#define GMT_DI_FORWARD_1(NAME, IDX, T1)                        \
+  static HRESULT WINAPI GMT_DIDev_##NAME(void* pThis, T1 a1) { \
+    GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);           \
+    typedef HRESULT(WINAPI* Fn)(void*, T1);                    \
+    return ((Fn)w->real_vtable[IDX])(w->real_device, a1);      \
+  }
+
+#define GMT_DI_FORWARD_2(NAME, IDX, T1, T2)                           \
+  static HRESULT WINAPI GMT_DIDev_##NAME(void* pThis, T1 a1, T2 a2) { \
+    GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);                  \
+    typedef HRESULT(WINAPI* Fn)(void*, T1, T2);                       \
+    return ((Fn)w->real_vtable[IDX])(w->real_device, a1, a2);         \
+  }
+
+#define GMT_DI_FORWARD_3(NAME, IDX, T1, T2, T3)                              \
+  static HRESULT WINAPI GMT_DIDev_##NAME(void* pThis, T1 a1, T2 a2, T3 a3) { \
+    GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);                         \
+    typedef HRESULT(WINAPI* Fn)(void*, T1, T2, T3);                          \
+    return ((Fn)w->real_vtable[IDX])(w->real_device, a1, a2, a3);            \
+  }
+
+#define GMT_DI_FORWARD_4(NAME, IDX, T1, T2, T3, T4)                                 \
+  static HRESULT WINAPI GMT_DIDev_##NAME(void* pThis, T1 a1, T2 a2, T3 a3, T4 a4) { \
+    GMT_DIDeviceWrapper* w = GMT_DID_WRAPPER(pThis);                                \
+    typedef HRESULT(WINAPI* Fn)(void*, T1, T2, T3, T4);                             \
+    return ((Fn)w->real_vtable[IDX])(w->real_device, a1, a2, a3, a4);               \
+  }
+
+GMT_DI_FORWARD_1(GetCapabilities, GMT_DID8_GetCapabilities, void*)
+GMT_DI_FORWARD_3(EnumObjects, GMT_DID8_EnumObjects, void*, void*, DWORD)
+GMT_DI_FORWARD_2(GetProperty, GMT_DID8_GetProperty, const GMT_GUID*, void*)
+GMT_DI_FORWARD_2(SetProperty, GMT_DID8_SetProperty, const GMT_GUID*, const void*)
+GMT_DI_FORWARD_0(Acquire, GMT_DID8_Acquire)
+GMT_DI_FORWARD_0(Unacquire, GMT_DID8_Unacquire)
+GMT_DI_FORWARD_1(SetEventNotification, GMT_DID8_SetEventNotification, HANDLE)
+GMT_DI_FORWARD_2(SetCooperativeLevel, GMT_DID8_SetCooperativeLevel, HWND, DWORD)
+GMT_DI_FORWARD_3(GetObjectInfo, GMT_DID8_GetObjectInfo, void*, DWORD, DWORD)
+GMT_DI_FORWARD_1(GetDeviceInfo, GMT_DID8_GetDeviceInfo, void*)
+GMT_DI_FORWARD_2(RunControlPanel, GMT_DID8_RunControlPanel, HWND, DWORD)
+GMT_DI_FORWARD_2(Initialize, GMT_DID8_Initialize, HINSTANCE, DWORD)
+GMT_DI_FORWARD_4(CreateEffect, GMT_DID8_CreateEffect, const GMT_GUID*, const void*, void**, void*)
+GMT_DI_FORWARD_3(EnumEffects, GMT_DID8_EnumEffects, void*, void*, DWORD)
+GMT_DI_FORWARD_2(GetEffectInfo, GMT_DID8_GetEffectInfo, void*, const GMT_GUID*)
+GMT_DI_FORWARD_1(GetForceFeedbackState, GMT_DID8_GetForceFeedbackState, DWORD*)
+GMT_DI_FORWARD_1(SendForceFeedbackCommand, GMT_DID8_SendForceFeedbackCommand, DWORD)
+GMT_DI_FORWARD_3(EnumCreatedEffectObjects, GMT_DID8_EnumCreatedEffectObjects, void*, void*, DWORD)
+GMT_DI_FORWARD_1(Escape, GMT_DID8_Escape, void*)
+GMT_DI_FORWARD_4(SendDeviceData, GMT_DID8_SendDeviceData, DWORD, const void*, DWORD*, DWORD)
+GMT_DI_FORWARD_4(EnumEffectsInFile, GMT_DID8_EnumEffectsInFile, const void*, void*, void*, DWORD)
+GMT_DI_FORWARD_4(WriteEffectToFile, GMT_DID8_WriteEffectToFile, const void*, DWORD, void*, DWORD)
+GMT_DI_FORWARD_3(BuildActionMap, GMT_DID8_BuildActionMap, void*, const void*, DWORD)
+GMT_DI_FORWARD_3(SetActionMap, GMT_DID8_SetActionMap, const void*, const void*, DWORD)
+GMT_DI_FORWARD_1(GetImageInfo, GMT_DID8_GetImageInfo, void*)
+
+static void GMT__InitDIDeviceVtable(void) {
+  if (g_di_device_vtable_initialized) return;
+  g_di_device_vtable[GMT_DID8_QueryInterface] = (void*)GMT_DIDev_QueryInterface;
+  g_di_device_vtable[GMT_DID8_AddRef] = (void*)GMT_DIDev_AddRef;
+  g_di_device_vtable[GMT_DID8_Release] = (void*)GMT_DIDev_Release;
+  g_di_device_vtable[GMT_DID8_GetCapabilities] = (void*)GMT_DIDev_GetCapabilities;
+  g_di_device_vtable[GMT_DID8_EnumObjects] = (void*)GMT_DIDev_EnumObjects;
+  g_di_device_vtable[GMT_DID8_GetProperty] = (void*)GMT_DIDev_GetProperty;
+  g_di_device_vtable[GMT_DID8_SetProperty] = (void*)GMT_DIDev_SetProperty;
+  g_di_device_vtable[GMT_DID8_Acquire] = (void*)GMT_DIDev_Acquire;
+  g_di_device_vtable[GMT_DID8_Unacquire] = (void*)GMT_DIDev_Unacquire;
+  g_di_device_vtable[GMT_DID8_GetDeviceState] = (void*)GMT_DIDev_GetDeviceState;
+  g_di_device_vtable[GMT_DID8_GetDeviceData] = (void*)GMT_DIDev_GetDeviceData;
+  g_di_device_vtable[GMT_DID8_SetDataFormat] = (void*)GMT_DIDev_SetDataFormat;
+  g_di_device_vtable[GMT_DID8_SetEventNotification] = (void*)GMT_DIDev_SetEventNotification;
+  g_di_device_vtable[GMT_DID8_SetCooperativeLevel] = (void*)GMT_DIDev_SetCooperativeLevel;
+  g_di_device_vtable[GMT_DID8_GetObjectInfo] = (void*)GMT_DIDev_GetObjectInfo;
+  g_di_device_vtable[GMT_DID8_GetDeviceInfo] = (void*)GMT_DIDev_GetDeviceInfo;
+  g_di_device_vtable[GMT_DID8_RunControlPanel] = (void*)GMT_DIDev_RunControlPanel;
+  g_di_device_vtable[GMT_DID8_Initialize] = (void*)GMT_DIDev_Initialize;
+  g_di_device_vtable[GMT_DID8_CreateEffect] = (void*)GMT_DIDev_CreateEffect;
+  g_di_device_vtable[GMT_DID8_EnumEffects] = (void*)GMT_DIDev_EnumEffects;
+  g_di_device_vtable[GMT_DID8_GetEffectInfo] = (void*)GMT_DIDev_GetEffectInfo;
+  g_di_device_vtable[GMT_DID8_GetForceFeedbackState] = (void*)GMT_DIDev_GetForceFeedbackState;
+  g_di_device_vtable[GMT_DID8_SendForceFeedbackCommand] = (void*)GMT_DIDev_SendForceFeedbackCommand;
+  g_di_device_vtable[GMT_DID8_EnumCreatedEffectObjects] = (void*)GMT_DIDev_EnumCreatedEffectObjects;
+  g_di_device_vtable[GMT_DID8_Escape] = (void*)GMT_DIDev_Escape;
+  g_di_device_vtable[GMT_DID8_Poll] = (void*)GMT_DIDev_Poll;
+  g_di_device_vtable[GMT_DID8_SendDeviceData] = (void*)GMT_DIDev_SendDeviceData;
+  g_di_device_vtable[GMT_DID8_EnumEffectsInFile] = (void*)GMT_DIDev_EnumEffectsInFile;
+  g_di_device_vtable[GMT_DID8_WriteEffectToFile] = (void*)GMT_DIDev_WriteEffectToFile;
+  g_di_device_vtable[GMT_DID8_BuildActionMap] = (void*)GMT_DIDev_BuildActionMap;
+  g_di_device_vtable[GMT_DID8_SetActionMap] = (void*)GMT_DIDev_SetActionMap;
+  g_di_device_vtable[GMT_DID8_GetImageInfo] = (void*)GMT_DIDev_GetImageInfo;
+  g_di_device_vtable_initialized = true;
+}
+
+static GMT_DIDeviceWrapper* GMT__WrapDIDevice(void* real_device, bool is_gamepad) {
+  GMT__InitDIDeviceVtable();
+  GMT_DIDeviceWrapper* w = (GMT_DIDeviceWrapper*)GMT_Alloc(sizeof(GMT_DIDeviceWrapper));
+  if (!w) return NULL;
+  memset(w, 0, sizeof(*w));
+  w->vtable = g_di_device_vtable;
+  w->real_device = real_device;
+  w->real_vtable = *(void***)real_device;  // First pointer in a COM object is the vtable.
+  w->ref_count = 1;
+  w->is_gamepad = is_gamepad;
+  w->gamepad_index = is_gamepad ? (int)(InterlockedIncrement(&g_di_gamepad_counter) - 1) : -1;
+  if (w->gamepad_index >= GMT_MAX_GAMEPADS) w->gamepad_index = GMT_MAX_GAMEPADS - 1;
+  w->data_format_size = 0;
+  return w;
+}
+
+// ---- IDirectInput8 Wrapper ----
+
+typedef struct GMT_DI8Wrapper {
+  void** vtable;
+  void* real_di8;
+  void** real_vtable;
+  LONG ref_count;
+} GMT_DI8Wrapper;
+
+#define GMT_DI8_WRAPPER(p) ((GMT_DI8Wrapper*)(p))
+
+static void* g_di8_vtable[GMT_DI8_VTABLE_SIZE];
+static bool g_di8_vtable_initialized = false;
+
+static HRESULT WINAPI GMT_DI8_QueryInterfaceImpl(void* pThis, const GMT_GUID* riid, void** ppvObject) {
+  GMT_DI8Wrapper* w = GMT_DI8_WRAPPER(pThis);
+  typedef HRESULT(WINAPI * Fn)(void*, const GMT_GUID*, void**);
+  HRESULT hr = ((Fn)w->real_vtable[GMT_DI8_QueryInterface])(w->real_di8, riid, ppvObject);
+  if (SUCCEEDED(hr) && ppvObject && *ppvObject == w->real_di8) {
+    *ppvObject = pThis;
+    InterlockedIncrement(&w->ref_count);
+  }
+  return hr;
+}
+
+static ULONG WINAPI GMT_DI8_AddRefImpl(void* pThis) {
+  return (ULONG)InterlockedIncrement(&GMT_DI8_WRAPPER(pThis)->ref_count);
+}
+
+static ULONG WINAPI GMT_DI8_ReleaseImpl(void* pThis) {
+  GMT_DI8Wrapper* w = GMT_DI8_WRAPPER(pThis);
+  LONG rc = InterlockedDecrement(&w->ref_count);
+  if (rc <= 0) {
+    typedef ULONG(WINAPI * Fn)(void*);
+    ((Fn)w->real_vtable[GMT_DI8_Release])(w->real_di8);
+    GMT_Free(w);
+    return 0;
+  }
+  return (ULONG)rc;
+}
+
+static HRESULT WINAPI GMT_DI8_CreateDeviceImpl(void* pThis, const GMT_GUID* rguid, void** lplpDirectInputDevice, void* pUnkOuter) {
+  GMT_DI8Wrapper* w = GMT_DI8_WRAPPER(pThis);
+  typedef HRESULT(WINAPI * Fn)(void*, const GMT_GUID*, void**, void*);
+  HRESULT hr = ((Fn)w->real_vtable[GMT_DI8_CreateDevice])(w->real_di8, rguid, lplpDirectInputDevice, pUnkOuter);
+  if (SUCCEEDED(hr) && lplpDirectInputDevice && *lplpDirectInputDevice) {
+    // Determine if this is a gamepad (not GUID_SysKeyboard and not GUID_SysMouse).
+    bool is_gamepad = true;
+    if (rguid) {
+      if (GMT__GuidEqual(rguid, &k_GUID_SysKeyboard) || GMT__GuidEqual(rguid, &k_GUID_SysMouse)) {
+        is_gamepad = false;
+      }
+    }
+    GMT_DIDeviceWrapper* wrapped = GMT__WrapDIDevice(*lplpDirectInputDevice, is_gamepad);
+    if (wrapped) {
+      *lplpDirectInputDevice = wrapped;
+    }
+  }
+  return hr;
+}
+
+// Forwarding thunks for remaining IDirectInput8 methods.
+#define GMT_DI8_FWD_1(NAME, IDX, T1)                         \
+  static HRESULT WINAPI GMT_DI8_##NAME(void* pThis, T1 a1) { \
+    GMT_DI8Wrapper* w = GMT_DI8_WRAPPER(pThis);              \
+    typedef HRESULT(WINAPI* Fn)(void*, T1);                  \
+    return ((Fn)w->real_vtable[IDX])(w->real_di8, a1);       \
+  }
+
+#define GMT_DI8_FWD_2(NAME, IDX, T1, T2)                            \
+  static HRESULT WINAPI GMT_DI8_##NAME(void* pThis, T1 a1, T2 a2) { \
+    GMT_DI8Wrapper* w = GMT_DI8_WRAPPER(pThis);                     \
+    typedef HRESULT(WINAPI* Fn)(void*, T1, T2);                     \
+    return ((Fn)w->real_vtable[IDX])(w->real_di8, a1, a2);          \
+  }
+
+#define GMT_DI8_FWD_3(NAME, IDX, T1, T2, T3)                               \
+  static HRESULT WINAPI GMT_DI8_##NAME(void* pThis, T1 a1, T2 a2, T3 a3) { \
+    GMT_DI8Wrapper* w = GMT_DI8_WRAPPER(pThis);                            \
+    typedef HRESULT(WINAPI* Fn)(void*, T1, T2, T3);                        \
+    return ((Fn)w->real_vtable[IDX])(w->real_di8, a1, a2, a3);             \
+  }
+
+#define GMT_DI8_FWD_4(NAME, IDX, T1, T2, T3, T4)                                  \
+  static HRESULT WINAPI GMT_DI8_##NAME(void* pThis, T1 a1, T2 a2, T3 a3, T4 a4) { \
+    GMT_DI8Wrapper* w = GMT_DI8_WRAPPER(pThis);                                   \
+    typedef HRESULT(WINAPI* Fn)(void*, T1, T2, T3, T4);                           \
+    return ((Fn)w->real_vtable[IDX])(w->real_di8, a1, a2, a3, a4);                \
+  }
+
+GMT_DI8_FWD_4(EnumDevicesImpl, GMT_DI8_EnumDevices, DWORD, void*, void*, DWORD)
+GMT_DI8_FWD_1(GetDeviceStatusImpl, GMT_DI8_GetDeviceStatus, const GMT_GUID*)
+GMT_DI8_FWD_2(RunControlPanelImpl, GMT_DI8_RunControlPanel, HWND, DWORD)
+GMT_DI8_FWD_2(InitializeImpl, GMT_DI8_Initialize, HINSTANCE, DWORD)
+GMT_DI8_FWD_3(FindDeviceImpl, GMT_DI8_FindDevice, const GMT_GUID*, const void*, GMT_GUID*)
+// EnumDevicesBySemantics has 5 args — define inline.
+static HRESULT WINAPI GMT_DI8_EnumDeviceBySemanticsImpl(void* pThis, const void* a1, void* a2, void* a3, void* a4, DWORD a5) {
+  GMT_DI8Wrapper* w = GMT_DI8_WRAPPER(pThis);
+  typedef HRESULT(WINAPI * Fn)(void*, const void*, void*, void*, void*, DWORD);
+  return ((Fn)w->real_vtable[GMT_DI8_EnumDevicesBySemantics])(w->real_di8, a1, a2, a3, a4, a5);
+}
+GMT_DI8_FWD_4(ConfigureDevicesImpl, GMT_DI8_ConfigureDevices, void*, void*, DWORD, void*)
+
+static void GMT__InitDI8Vtable(void) {
+  if (g_di8_vtable_initialized) return;
+  g_di8_vtable[GMT_DI8_QueryInterface] = (void*)GMT_DI8_QueryInterfaceImpl;
+  g_di8_vtable[GMT_DI8_AddRef] = (void*)GMT_DI8_AddRefImpl;
+  g_di8_vtable[GMT_DI8_Release] = (void*)GMT_DI8_ReleaseImpl;
+  g_di8_vtable[GMT_DI8_CreateDevice] = (void*)GMT_DI8_CreateDeviceImpl;
+  g_di8_vtable[GMT_DI8_EnumDevices] = (void*)GMT_DI8_EnumDevicesImpl;
+  g_di8_vtable[GMT_DI8_GetDeviceStatus] = (void*)GMT_DI8_GetDeviceStatusImpl;
+  g_di8_vtable[GMT_DI8_RunControlPanel] = (void*)GMT_DI8_RunControlPanelImpl;
+  g_di8_vtable[GMT_DI8_Initialize] = (void*)GMT_DI8_InitializeImpl;
+  g_di8_vtable[GMT_DI8_FindDevice] = (void*)GMT_DI8_FindDeviceImpl;
+  g_di8_vtable[GMT_DI8_EnumDevicesBySemantics] = (void*)GMT_DI8_EnumDeviceBySemanticsImpl;
+  g_di8_vtable[GMT_DI8_ConfigureDevices] = (void*)GMT_DI8_ConfigureDevicesImpl;
+  g_di8_vtable_initialized = true;
+}
+
+// ---- DirectInput8Create hook ----
+
+static HRESULT WINAPI GMT_Hook_DirectInput8Create(HINSTANCE hinst, DWORD dwVersion, const GMT_GUID* riidltf, void** ppvOut, void* punkOuter) {
+  HRESULT hr = g_orig_DirectInput8Create(hinst, dwVersion, riidltf, ppvOut, punkOuter);
+  if (FAILED(hr) || !ppvOut || !*ppvOut) return hr;
+
+  // Wrap the returned IDirectInput8 so we can intercept CreateDevice.
+  GMT__InitDI8Vtable();
+  GMT_DI8Wrapper* w = (GMT_DI8Wrapper*)GMT_Alloc(sizeof(GMT_DI8Wrapper));
+  if (!w) return hr;  // Can't wrap; return the real object.
+  memset(w, 0, sizeof(*w));
+  w->vtable = g_di8_vtable;
+  w->real_di8 = *ppvOut;
+  w->real_vtable = *(void***)*ppvOut;
+  w->ref_count = 1;
+  *ppvOut = w;
+  return hr;
+}
+
+// ---- WH_GETMESSAGE hook: strips WM_INPUT during replay ----
+//
+// Raw Input messages (WM_INPUT) bypass the LL hooks and arrive directly in the
+// application's message queue.  This hook fires after GetMessage / PeekMessage
+// retrieves a message and nullifies any WM_INPUT so the game never processes
+// real raw-input events during replay.
+
+static LRESULT CALLBACK GMT__GetMessageHook(int nCode, WPARAM wParam, LPARAM lParam) {
+  if (nCode >= 0 && InterlockedCompareExchange(&g_replay_hooks_active, 0, 0)) {
+    MSG* msg = (MSG*)lParam;
+    if (msg && msg->message == WM_INPUT) {
+      msg->message = WM_NULL;  // Neutralise the message.
+    }
+  }
+  return CallNextHookEx(g_getmessage_hook, nCode, wParam, lParam);
+}
+
+// ---- IAT patching helpers ----
+
+// Patches one IAT entry in a single PE module.  Returns true if the entry was
+// found and replaced.  `orig_func` receives the original function pointer if
+// it was not already saved (i.e. if *orig_func == NULL on entry).
+static bool GMT__PatchIATEntry(HMODULE hModule, const char* dll_name, const void* target_func, const void* new_func, void** orig_func) {
+  // Walk the PE headers to find the import directory.
+  PIMAGE_DOS_HEADER dos = (PIMAGE_DOS_HEADER)hModule;
+  if (dos->e_magic != IMAGE_DOS_SIGNATURE) return false;
+
+  PIMAGE_NT_HEADERS nt = (PIMAGE_NT_HEADERS)((BYTE*)hModule + dos->e_lfanew);
+  if (nt->Signature != IMAGE_NT_SIGNATURE) return false;
+
+  PIMAGE_DATA_DIRECTORY import_dir =
+      &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+  if (import_dir->Size == 0 || import_dir->VirtualAddress == 0) return false;
+
+  PIMAGE_IMPORT_DESCRIPTOR imp =
+      (PIMAGE_IMPORT_DESCRIPTOR)((BYTE*)hModule + import_dir->VirtualAddress);
+
+  for (; imp->Name != 0; ++imp) {
+    const char* name = (const char*)((BYTE*)hModule + imp->Name);
+    if (_stricmp(name, dll_name) != 0) continue;
+
+    PIMAGE_THUNK_DATA iat =
+        (PIMAGE_THUNK_DATA)((BYTE*)hModule + imp->FirstThunk);
+
+    for (; iat->u1.Function != 0; ++iat) {
+      if ((void*)(uintptr_t)iat->u1.Function == target_func) {
+        // Save original (only once).
+        if (orig_func && *orig_func == NULL) {
+          *orig_func = (void*)(uintptr_t)iat->u1.Function;
+        }
+
+        // Make the IAT entry writable, patch it, then restore protection.
+        DWORD old_protect;
+        VirtualProtect(&iat->u1.Function, sizeof(iat->u1.Function), PAGE_READWRITE, &old_protect);
+        iat->u1.Function = (ULONG_PTR)new_func;
+        VirtualProtect(&iat->u1.Function, sizeof(iat->u1.Function), old_protect, &old_protect);
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
+// Iterates all loaded modules and patches the IAT entry for a given function.
+static void GMT__PatchAllModules(const char* dll_name, const void* target_func, const void* new_func, void** orig_func) {
+  HANDLE proc = GetCurrentProcess();
+  HMODULE modules[1024];
+  DWORD needed = 0;
+  if (!EnumProcessModules(proc, modules, sizeof(modules), &needed)) return;
+
+  DWORD count = needed / sizeof(HMODULE);
+  for (DWORD i = 0; i < count; ++i) {
+    GMT__PatchIATEntry(modules[i], dll_name, target_func, new_func, orig_func);
+  }
+}
+
+// Restores a single IAT entry across all modules to the original function.
+static void GMT__UnpatchAllModules(const char* dll_name, const void* hooked_func, void* orig_func) {
+  if (!orig_func) return;
+
+  HANDLE proc = GetCurrentProcess();
+  HMODULE modules[1024];
+  DWORD needed = 0;
+  if (!EnumProcessModules(proc, modules, sizeof(modules), &needed)) return;
+
+  DWORD count = needed / sizeof(HMODULE);
+  for (DWORD i = 0; i < count; ++i) {
+    // Reuse the same patcher but swap the direction.
+    GMT__PatchIATEntry(modules[i], dll_name, hooked_func, orig_func, NULL);
+  }
+}
+
+// ---- Public helpers called from Platform.h ----
+
+void GMT_Platform_InstallInputHooks(void) {
+  // Resolve the original function addresses from user32.dll *before* patching.
+  HMODULE user32 = GetModuleHandleA("user32.dll");
+  if (user32) {
+    if (!g_orig_GetAsyncKeyState)
+      g_orig_GetAsyncKeyState = (PFN_GetAsyncKeyState)GetProcAddress(user32, "GetAsyncKeyState");
+    if (!g_orig_GetKeyState)
+      g_orig_GetKeyState = (PFN_GetKeyState)GetProcAddress(user32, "GetKeyState");
+    if (!g_orig_GetKeyboardState)
+      g_orig_GetKeyboardState = (PFN_GetKeyboardState)GetProcAddress(user32, "GetKeyboardState");
+    if (!g_orig_GetCursorPos)
+      g_orig_GetCursorPos = (PFN_GetCursorPos)GetProcAddress(user32, "GetCursorPos");
+    if (!g_orig_GetRawInputData)
+      g_orig_GetRawInputData = (PFN_GetRawInputData)GetProcAddress(user32, "GetRawInputData");
+  }
+
+  // Resolve XInput functions.  Try versioned DLLs, then the generic name.
+  {
+    const char* xinput_dlls[] = {"xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll", "XInput1_4.dll", NULL};
+    HMODULE xinput = NULL;
+    for (int i = 0; xinput_dlls[i]; ++i) {
+      xinput = GetModuleHandleA(xinput_dlls[i]);
+      if (xinput) break;
+    }
+    // If no module is loaded yet, try loading the preferred version.
+    if (!xinput) xinput = LoadLibraryA("xinput1_4.dll");
+    if (xinput) {
+      if (!g_orig_XInputGetState)
+        g_orig_XInputGetState = (PFN_XInputGetState)GetProcAddress(xinput, "XInputGetState");
+      if (!g_orig_XInputSetState)
+        g_orig_XInputSetState = (PFN_XInputSetState)GetProcAddress(xinput, "XInputSetState");
+      if (!g_orig_XInputGetCapabilities)
+        g_orig_XInputGetCapabilities = (PFN_XInputGetCapabilities)GetProcAddress(xinput, "XInputGetCapabilities");
+      if (!g_orig_XInputGetKeystroke)
+        g_orig_XInputGetKeystroke = (PFN_XInputGetKeystroke)GetProcAddress(xinput, "XInputGetKeystroke");
+    }
+  }
+
+  // Resolve DirectInput8Create.
+  {
+    HMODULE dinput8 = GetModuleHandleA("dinput8.dll");
+    if (!dinput8) dinput8 = LoadLibraryA("dinput8.dll");
+    if (dinput8 && !g_orig_DirectInput8Create) {
+      g_orig_DirectInput8Create = (PFN_DirectInput8Create)GetProcAddress(dinput8, "DirectInput8Create");
+    }
+  }
+
+  // Patch IATs of all loaded modules — user32 functions.
+  if (g_orig_GetAsyncKeyState)
+    GMT__PatchAllModules("user32.dll", (const void*)g_orig_GetAsyncKeyState, (const void*)GMT_Hook_GetAsyncKeyState, (void**)&g_orig_GetAsyncKeyState);
+  if (g_orig_GetKeyState)
+    GMT__PatchAllModules("user32.dll", (const void*)g_orig_GetKeyState, (const void*)GMT_Hook_GetKeyState, (void**)&g_orig_GetKeyState);
+  if (g_orig_GetKeyboardState)
+    GMT__PatchAllModules("user32.dll", (const void*)g_orig_GetKeyboardState, (const void*)GMT_Hook_GetKeyboardState, (void**)&g_orig_GetKeyboardState);
+  if (g_orig_GetCursorPos)
+    GMT__PatchAllModules("user32.dll", (const void*)g_orig_GetCursorPos, (const void*)GMT_Hook_GetCursorPos, (void**)&g_orig_GetCursorPos);
+  if (g_orig_GetRawInputData)
+    GMT__PatchAllModules("user32.dll", (const void*)g_orig_GetRawInputData, (const void*)GMT_Hook_GetRawInputData, (void**)&g_orig_GetRawInputData);
+
+  // Patch IATs — XInput functions.
+  // XInput is imported under various DLL names; patch all variants.
+  {
+    const char* xinput_names[] = {"xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll", NULL};
+    for (int i = 0; xinput_names[i]; ++i) {
+      if (g_orig_XInputGetState)
+        GMT__PatchAllModules(xinput_names[i], (const void*)g_orig_XInputGetState, (const void*)GMT_Hook_XInputGetState, (void**)&g_orig_XInputGetState);
+      if (g_orig_XInputSetState)
+        GMT__PatchAllModules(xinput_names[i], (const void*)g_orig_XInputSetState, (const void*)GMT_Hook_XInputSetState, (void**)&g_orig_XInputSetState);
+      if (g_orig_XInputGetCapabilities)
+        GMT__PatchAllModules(xinput_names[i], (const void*)g_orig_XInputGetCapabilities, (const void*)GMT_Hook_XInputGetCapabilities, (void**)&g_orig_XInputGetCapabilities);
+      if (g_orig_XInputGetKeystroke)
+        GMT__PatchAllModules(xinput_names[i], (const void*)g_orig_XInputGetKeystroke, (const void*)GMT_Hook_XInputGetKeystroke, (void**)&g_orig_XInputGetKeystroke);
+    }
+  }
+
+  // Patch IATs — DirectInput8Create.
+  if (g_orig_DirectInput8Create)
+    GMT__PatchAllModules("dinput8.dll", (const void*)g_orig_DirectInput8Create, (const void*)GMT_Hook_DirectInput8Create, (void**)&g_orig_DirectInput8Create);
+
+  // Install WH_GETMESSAGE hook to strip WM_INPUT messages.
+  if (!g_getmessage_hook) {
+    g_getmessage_hook = SetWindowsHookExA(WH_GETMESSAGE, GMT__GetMessageHook, NULL, GetCurrentThreadId());
+  }
+}
+
+void GMT_Platform_RemoveInputHooks(void) {
+  // Deactivate hooks first so any in-flight calls fall through.
+  InterlockedExchange(&g_replay_hooks_active, 0);
+
+  // Restore IAT entries — user32 functions.
+  GMT__UnpatchAllModules("user32.dll", (const void*)GMT_Hook_GetAsyncKeyState, (void*)g_orig_GetAsyncKeyState);
+  GMT__UnpatchAllModules("user32.dll", (const void*)GMT_Hook_GetKeyState, (void*)g_orig_GetKeyState);
+  GMT__UnpatchAllModules("user32.dll", (const void*)GMT_Hook_GetKeyboardState, (void*)g_orig_GetKeyboardState);
+  GMT__UnpatchAllModules("user32.dll", (const void*)GMT_Hook_GetCursorPos, (void*)g_orig_GetCursorPos);
+  GMT__UnpatchAllModules("user32.dll", (const void*)GMT_Hook_GetRawInputData, (void*)g_orig_GetRawInputData);
+
+  g_orig_GetAsyncKeyState = NULL;
+  g_orig_GetKeyState = NULL;
+  g_orig_GetKeyboardState = NULL;
+  g_orig_GetCursorPos = NULL;
+  g_orig_GetRawInputData = NULL;
+
+  // Restore IAT entries — XInput functions.
+  {
+    const char* xinput_names[] = {"xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll", NULL};
+    for (int i = 0; xinput_names[i]; ++i) {
+      if (g_orig_XInputGetState)
+        GMT__UnpatchAllModules(xinput_names[i], (const void*)GMT_Hook_XInputGetState, (void*)g_orig_XInputGetState);
+      if (g_orig_XInputSetState)
+        GMT__UnpatchAllModules(xinput_names[i], (const void*)GMT_Hook_XInputSetState, (void*)g_orig_XInputSetState);
+      if (g_orig_XInputGetCapabilities)
+        GMT__UnpatchAllModules(xinput_names[i], (const void*)GMT_Hook_XInputGetCapabilities, (void*)g_orig_XInputGetCapabilities);
+      if (g_orig_XInputGetKeystroke)
+        GMT__UnpatchAllModules(xinput_names[i], (const void*)GMT_Hook_XInputGetKeystroke, (void*)g_orig_XInputGetKeystroke);
+    }
+  }
+  g_orig_XInputGetState = NULL;
+  g_orig_XInputSetState = NULL;
+  g_orig_XInputGetCapabilities = NULL;
+  g_orig_XInputGetKeystroke = NULL;
+
+  // Restore IAT entries — DirectInput8Create.
+  if (g_orig_DirectInput8Create)
+    GMT__UnpatchAllModules("dinput8.dll", (const void*)GMT_Hook_DirectInput8Create, (void*)g_orig_DirectInput8Create);
+  g_orig_DirectInput8Create = NULL;
+  g_di_gamepad_counter = 0;
+
+  // Remove WH_GETMESSAGE hook.
+  if (g_getmessage_hook) {
+    UnhookWindowsHookEx(g_getmessage_hook);
+    g_getmessage_hook = NULL;
+  }
+}
+
+void GMT_Platform_SetReplayedInput(const GMT_InputState* input) {
+  if (input) {
+    memcpy(&g_replayed_input, input, sizeof(g_replayed_input));
+  }
+}
+
+void GMT_Platform_SetReplayHooksActive(bool active) {
+  InterlockedExchange(&g_replay_hooks_active, active ? 1 : 0);
 }
 
 double GMT_Platform_GetTime(void) {
@@ -255,6 +1343,9 @@ void GMT_Platform_Init(void) {
 }
 
 void GMT_Platform_Quit(void) {
+  // Remove IAT hooks and WH_GETMESSAGE hook before anything else.
+  GMT_Platform_RemoveInputHooks();
+
   if (g_mouse_hook) {
     UnhookWindowsHookEx(g_mouse_hook);
     g_mouse_hook = NULL;
@@ -315,8 +1406,14 @@ bool GMT_Platform_CreateDirRecursive(const char* path) {
 // ===== Input Capture =====
 
 void GMT_Platform_CaptureInput(GMT_InputState* out) {
+  // When IAT hooks are installed our own calls would be intercepted too.
+  // Call through the saved original pointers to always get real hardware state.
+  PFN_GetKeyboardState fn_gkbs = g_orig_GetKeyboardState ? g_orig_GetKeyboardState : GetKeyboardState;
+  PFN_GetCursorPos fn_gcp = g_orig_GetCursorPos ? g_orig_GetCursorPos : GetCursorPos;
+  PFN_GetAsyncKeyState fn_gaks = g_orig_GetAsyncKeyState ? g_orig_GetAsyncKeyState : GetAsyncKeyState;
+
   uint8_t vk_state[256];
-  GetKeyboardState(vk_state);
+  fn_gkbs(vk_state);
 
   out->keys[GMT_Key_UNKNOWN] = 0;
   for (int k = 1; k < GMT_KEY_COUNT; ++k) {
@@ -332,7 +1429,7 @@ void GMT_Platform_CaptureInput(GMT_InputState* out) {
   }
 
   POINT pt = {0, 0};
-  GetCursorPos(&pt);
+  fn_gcp(&pt);
   out->mouse_x = (int32_t)pt.x;
   out->mouse_y = (int32_t)pt.y;
 
@@ -341,13 +1438,40 @@ void GMT_Platform_CaptureInput(GMT_InputState* out) {
   out->mouse_wheel_y = (int32_t)InterlockedExchange(&g_wheel_y, 0);
 
   GMT_MouseButtons buttons = 0;
-  if (GetAsyncKeyState(VK_LBUTTON) & 0x8000) buttons |= GMT_MouseButton_LEFT;
-  if (GetAsyncKeyState(VK_RBUTTON) & 0x8000) buttons |= GMT_MouseButton_RIGHT;
-  if (GetAsyncKeyState(VK_MBUTTON) & 0x8000) buttons |= GMT_MouseButton_MIDDLE;
-  if (GetAsyncKeyState(VK_XBUTTON1) & 0x8000) buttons |= GMT_MouseButton_X1;
-  if (GetAsyncKeyState(VK_XBUTTON2) & 0x8000) buttons |= GMT_MouseButton_X2;
+  if (fn_gaks(VK_LBUTTON) & 0x8000) buttons |= GMT_MouseButton_LEFT;
+  if (fn_gaks(VK_RBUTTON) & 0x8000) buttons |= GMT_MouseButton_RIGHT;
+  if (fn_gaks(VK_MBUTTON) & 0x8000) buttons |= GMT_MouseButton_MIDDLE;
+  if (fn_gaks(VK_XBUTTON1) & 0x8000) buttons |= GMT_MouseButton_X1;
+  if (fn_gaks(VK_XBUTTON2) & 0x8000) buttons |= GMT_MouseButton_X2;
   // Bits 5–7 (GMT_MouseButton_5/6/7) have no Win32 mapping; left as 0.
   out->mouse_buttons = buttons;
+
+  // ---- Gamepad state (XInput) ----
+  {
+    PFN_XInputGetState fn_xgs = g_orig_XInputGetState;
+    for (int i = 0; i < GMT_MAX_GAMEPADS; ++i) {
+      GMT_GamepadState* gp = &out->gamepads[i];
+      if (fn_xgs) {
+        XINPUT_STATE xs;
+        memset(&xs, 0, sizeof(xs));
+        DWORD res = fn_xgs((DWORD)i, &xs);
+        if (res == ERROR_SUCCESS) {
+          gp->connected = 1;
+          gp->buttons = xs.Gamepad.wButtons;
+          gp->left_trigger = xs.Gamepad.bLeftTrigger;
+          gp->right_trigger = xs.Gamepad.bRightTrigger;
+          gp->left_stick_x = xs.Gamepad.sThumbLX;
+          gp->left_stick_y = xs.Gamepad.sThumbLY;
+          gp->right_stick_x = xs.Gamepad.sThumbRX;
+          gp->right_stick_y = xs.Gamepad.sThumbRY;
+        } else {
+          memset(gp, 0, sizeof(*gp));
+        }
+      } else {
+        memset(gp, 0, sizeof(*gp));
+      }
+    }
+  }
 }
 
 // ===== Input Injection =====
@@ -483,7 +1607,27 @@ void GMT_Platform_InjectInput(const GMT_InputState* new_input,
   }
 
   // ---- Mouse position ----
-  SetCursorPos((int)new_input->mouse_x, (int)new_input->mouse_y);
+  // Use SendInput with MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK so that
+  // the resulting event is flagged as LLMHF_INJECTED and passes through our
+  // mouse LL hook (which blocks non-injected movement during replay).
+  // Coordinates are normalised to [0, 65535] across the entire virtual desktop.
+  {
+    int vsx = GetSystemMetrics(SM_XVIRTUALSCREEN);   // Left edge.
+    int vsy = GetSystemMetrics(SM_YVIRTUALSCREEN);   // Top edge.
+    int vsw = GetSystemMetrics(SM_CXVIRTUALSCREEN);  // Width.
+    int vsh = GetSystemMetrics(SM_CYVIRTUALSCREEN);  // Height.
+
+    if (vsw > 0 && vsh > 0) {
+      INPUT mi = {0};
+      mi.type = INPUT_MOUSE;
+      mi.mi.dx = (LONG)((((double)new_input->mouse_x - vsx) / vsw) * 65535.0);
+      mi.mi.dy = (LONG)((((double)new_input->mouse_y - vsy) / vsh) * 65535.0);
+      mi.mi.dwFlags = MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
+      mi.mi.time = 0;
+      mi.mi.dwExtraInfo = 0;
+      SendInput(1, &mi, sizeof(INPUT));
+    }
+  }
 }
 
 // ===== Mutex =====

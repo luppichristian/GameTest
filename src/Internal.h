@@ -27,7 +27,7 @@
 // All multi-byte integers are little-endian.
 
 #define GMT_RECORD_MAGIC   0x54534D47u  // 'GMST' in memory (little-endian)
-#define GMT_RECORD_VERSION 1u
+#define GMT_RECORD_VERSION 2u
 
 #define GMT_RECORD_TAG_INPUT  ((uint8_t)0x01)
 #define GMT_RECORD_TAG_SIGNAL ((uint8_t)0x02)
@@ -111,6 +111,15 @@ typedef struct GMT_State {
 
   // Previous per-frame input state, used to compute deltas for injection.
   GMT_InputState replay_prev_input;
+
+  // Current replayed input state for this frame.  Updated by InjectInput each
+  // frame and read by the hooked Win32 input functions (GetAsyncKeyState etc.)
+  // so that polling-based games see the replayed state instead of real hardware.
+  GMT_InputState replay_current_input;
+
+  // True while the IAT hooks should return replayed state instead of calling
+  // through to the original Win32 functions.
+  bool replay_hooks_active;
 
   // Whether replay is blocked waiting for a game-side sync signal.
   bool waiting_for_signal;

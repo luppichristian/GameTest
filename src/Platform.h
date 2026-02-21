@@ -48,6 +48,28 @@ void GMT_Platform_CaptureInput(GMT_InputState* out);
 // input queue stays consistent.  Mouse position is set unconditionally.
 void GMT_Platform_InjectInput(const GMT_InputState* new_input, const GMT_InputState* prev_input);
 
+// ===== Replay Input Interception =====
+
+// Installs IAT hooks on all loaded modules to redirect Win32 input-polling
+// functions (GetAsyncKeyState, GetKeyState, GetKeyboardState, GetCursorPos) to
+// return the replayed state instead of real hardware state.  Also installs a
+// WH_GETMESSAGE hook to strip WM_INPUT (Raw Input) messages.
+// Called once from GMT_Platform_Init when mode == GMT_Mode_REPLAY.
+void GMT_Platform_InstallInputHooks(void);
+
+// Removes all IAT hooks and the WH_GETMESSAGE hook installed by
+// GMT_Platform_InstallInputHooks.  Called from GMT_Platform_Quit.
+void GMT_Platform_RemoveInputHooks(void);
+
+// Updates the replayed input state that the hooked Win32 functions return.
+// Called from GMT_Record_InjectInput after determining the current frame's input.
+void GMT_Platform_SetReplayedInput(const GMT_InputState* input);
+
+// Enables or disables the replayed-state override.  When enabled, all hooked
+// Win32 input APIs return the replayed state; when disabled, they call through
+// to the original OS functions.
+void GMT_Platform_SetReplayHooksActive(bool active);
+
 // ===== High-Resolution Timer =====
 
 // Returns the current time in seconds from an arbitrary fixed epoch.

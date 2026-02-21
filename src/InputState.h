@@ -2,9 +2,9 @@
  * InputState.h - Snapshot of all input for a single frame.
  *
  * GMT_InputState bundles every piece of per-frame input data (keyboard, mouse
- * position, mouse wheel, and mouse buttons) into one struct.  It is the unit of
- * data passed to GMT_Platform_CaptureInput, GMT_Platform_InjectInput, and
- * written / read by the record / replay engine.
+ * position, mouse wheel, mouse buttons, and gamepads) into one struct.  It is
+ * the unit of data passed to GMT_Platform_CaptureInput, GMT_Platform_InjectInput,
+ * and written / read by the record / replay engine.
  */
 
 #pragma once
@@ -169,6 +169,53 @@ typedef enum GMT_MouseButton {
 // Bitmask of zero or more GMT_MouseButton flags packed into a single byte.
 typedef uint8_t GMT_MouseButtons;
 
+// ===== Gamepad Support =====
+//
+// GMT_GamepadState is a platform-independent representation of a single gamepad
+// (i.e. an XInput controller or a DirectInput game controller mapped to the same
+// layout).  Up to GMT_MAX_GAMEPADS (4, matching XInput's limit) are captured per
+// frame.  The layout mirrors XInput's XINPUT_GAMEPAD with normalised axis ranges
+// so the file format stays portable.
+
+#define GMT_MAX_GAMEPADS 4
+
+// Gamepad button bit flags (matches XINPUT_GAMEPAD_* layout for easy mapping).
+typedef enum GMT_GamepadButton {
+  GMT_GamepadButton_DPAD_UP = 0x0001,
+  GMT_GamepadButton_DPAD_DOWN = 0x0002,
+  GMT_GamepadButton_DPAD_LEFT = 0x0004,
+  GMT_GamepadButton_DPAD_RIGHT = 0x0008,
+  GMT_GamepadButton_START = 0x0010,
+  GMT_GamepadButton_BACK = 0x0020,
+  GMT_GamepadButton_LEFT_THUMB = 0x0040,
+  GMT_GamepadButton_RIGHT_THUMB = 0x0080,
+  GMT_GamepadButton_LEFT_SHOULDER = 0x0100,
+  GMT_GamepadButton_RIGHT_SHOULDER = 0x0200,
+  GMT_GamepadButton_GUIDE = 0x0400,  // Xbox / Guide button (XInput hidden).
+  GMT_GamepadButton_A = 0x1000,
+  GMT_GamepadButton_B = 0x2000,
+  GMT_GamepadButton_X = 0x4000,
+  GMT_GamepadButton_Y = 0x8000,
+} GMT_GamepadButton;
+
+typedef struct GMT_GamepadState {
+  // Whether this gamepad slot is connected this frame.
+  uint8_t connected;
+
+  // Bitmask of GMT_GamepadButton flags.
+  uint16_t buttons;
+
+  // Analog triggers [0, 255].
+  uint8_t left_trigger;
+  uint8_t right_trigger;
+
+  // Thumbstick axes [-32768, 32767].
+  int16_t left_stick_x;
+  int16_t left_stick_y;
+  int16_t right_stick_x;
+  int16_t right_stick_y;
+} GMT_GamepadState;
+
 // ===== Per-frame input snapshot =====
 
 typedef struct GMT_InputState {
@@ -189,6 +236,9 @@ typedef struct GMT_InputState {
 
   // Bitmask of currently pressed mouse buttons (GMT_MouseButton flags).
   GMT_MouseButtons mouse_buttons;
+
+  // Per-gamepad state for up to GMT_MAX_GAMEPADS controllers.
+  GMT_GamepadState gamepads[GMT_MAX_GAMEPADS];
 } GMT_InputState;
 
 // Zeroes every field in *s.

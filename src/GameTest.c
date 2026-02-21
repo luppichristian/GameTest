@@ -63,6 +63,8 @@ bool GMT_Init(const GMT_Setup* setup) {
         memset(&g_gmt, 0, sizeof(g_gmt));
         return false;
       }
+      // Install IAT hooks to intercept all Win32 input-polling functions.
+      GMT_Platform_InstallInputHooks();
       break;
 
     case GMT_Mode_DISABLED:
@@ -77,11 +79,19 @@ bool GMT_Init(const GMT_Setup* setup) {
   g_gmt.replay_time_offset = 0.0;
   g_gmt.signal_wait_start = 0.0;
 
+  // Activate replayed-state hooks now that the clock is running.
+  if (g_gmt.mode == GMT_Mode_REPLAY) {
+    GMT_Platform_SetReplayHooksActive(true);
+  }
+
   return true;
 }
 
 void GMT_Quit(void) {
   if (!g_gmt.initialized) return;
+
+  // Deactivate hooks before tearing down.
+  GMT_Platform_SetReplayHooksActive(false);
 
   // Finalise recording / replay.
   switch (g_gmt.mode) {
