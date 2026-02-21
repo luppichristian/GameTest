@@ -28,7 +28,12 @@ static void GMT_DefaultLogCallback(GMT_Severity severity, const char* msg, GMT_C
       break;
   }
 
+#ifdef GMT_VERBOSE
   fprintf(out, "[GameTest-%s] [%s] %s  (%s:%d in %s)\n", mode, prefix, msg ? msg : "(null)", loc.file ? loc.file : "?", loc.line, loc.function ? loc.function : "?");
+#else
+  fprintf(out, "[GameTest-%s] [%s] %s\n", mode, prefix, msg ? msg : "(null)");
+#endif
+
   fflush(out);
 }
 

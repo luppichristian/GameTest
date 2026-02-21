@@ -100,22 +100,9 @@ void GMT_PrintReport_(void) {
   }
 
   GMT_LogInfo("Report:");
-
-  const char* mode_str = "DISABLED";
-  switch (g_gmt.mode) {
-    case GMT_Mode_RECORD:   mode_str = "RECORD"; break;
-    case GMT_Mode_REPLAY:   mode_str = "REPLAY"; break;
-    case GMT_Mode_DISABLED: mode_str = "DISABLED"; break;
-  }
-
-  GMT_LogInfo("  Mode           : %s", mode_str);
-
-  if (g_gmt.setup.test_path) {
-    GMT_LogInfo("  Test file      : %s", g_gmt.setup.test_path);
-  }
-
   GMT_LogInfo("  Frames run     : %" PRIu64, g_gmt.frame_index);
-
+  GMT_LogInfo("  Total asserts  : %zu", g_gmt.total_assertion_count);
+  GMT_LogInfo("  Unique asserts : %zu", g_gmt.unique_assertion_count);
   GMT_LogInfo("  Failed asserts : %zu", failures);
 
   if (failures > 0) {

@@ -9,11 +9,37 @@
 #include "Internal.h"
 #include <string.h>
 
+// Insert a code-location hash into the seen-locations open-addressing hash set.
+// Must be called with the mutex held.
+static void GMT_TrackAssertionSite_(int hash) {
+  unsigned int idx = (unsigned int)((uint32_t)hash) % GMT_MAX_UNIQUE_ASSERTIONS;
+  for (size_t i = 0; i < GMT_MAX_UNIQUE_ASSERTIONS; ++i) {
+    unsigned int slot = (idx + (unsigned int)i) % GMT_MAX_UNIQUE_ASSERTIONS;
+    if (!g_gmt.seen_assertion_occupied[slot]) {
+      g_gmt.seen_assertion_hashes[slot] = hash;
+      g_gmt.seen_assertion_occupied[slot] = true;
+      g_gmt.unique_assertion_count++;
+      return;
+    }
+    if (g_gmt.seen_assertion_hashes[slot] == hash) {
+      return;  // Already tracked.
+    }
+  }
+  // Set is full; saturate silently.
+}
+
 void GMT_Assert_(bool condition, const char* msg, GMT_CodeLocation loc) {
-  if (condition) return;
   if (!g_gmt.initialized || g_gmt.mode == GMT_Mode_DISABLED) return;
 
   GMT_Platform_MutexLock();
+
+  g_gmt.total_assertion_count++;
+  GMT_TrackAssertionSite_(GMT_HashCodeLocation_(loc));
+
+  if (condition) {
+    GMT_Platform_MutexUnlock();
+    return;
+  }
 
   g_gmt.assertion_fire_count++;
 
@@ -76,5 +102,8 @@ void GMT_ClearFailedAssertions_(void) {
   GMT_Platform_MutexLock();
   g_gmt.failed_assertion_count = 0;
   g_gmt.assertion_fire_count = 0;
+  g_gmt.total_assertion_count = 0;
+  g_gmt.unique_assertion_count = 0;
+  memset(g_gmt.seen_assertion_occupied, 0, sizeof(g_gmt.seen_assertion_occupied));
   GMT_Platform_MutexUnlock();
 }

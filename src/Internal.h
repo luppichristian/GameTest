@@ -14,6 +14,7 @@
 // ===== Limits =====
 
 #define GMT_MAX_FAILED_ASSERTIONS 1024
+#define GMT_MAX_UNIQUE_ASSERTIONS 2048
 
 // ===== Record File Format =====
 //
@@ -53,6 +54,17 @@ typedef struct GMT_RawSignalRecord {
 } GMT_RawSignalRecord;
 #pragma pack(pop)
 
+// ===== File metrics (used for logging after load/before close) =====
+
+typedef struct GMT_FileMetrics {
+  long file_size_bytes;  // File size in bytes (RECORD: incl. pending TAG_END; REPLAY: 0)
+  size_t input_count;    // Number of input records (RECORD: estimated from file size)
+  size_t signal_count;   // Number of signal records (RECORD: not tracked, always 0)
+  double duration;       // Recording length in seconds
+  double input_density;  // Input records per second
+  uint64_t frame_count;  // Frames processed (RECORD only; 0 for REPLAY)
+} GMT_FileMetrics;
+
 // ===== In-memory decoded records (used during REPLAY) =====
 
 typedef struct GMT_DecodedInput {
@@ -81,6 +93,13 @@ typedef struct GMT_State {
   size_t failed_assertion_count;
   // Running count of assertion failures this run (reset by GMT_Reset).
   int assertion_fire_count;
+  // Total number of GMT_Assert_ calls (pass + fail) this run.
+  size_t total_assertion_count;
+  // Number of distinct call-site locations seen this run.
+  size_t unique_assertion_count;
+  // Open-addressing hash set used to track unique assertion call sites.
+  int seen_assertion_hashes[GMT_MAX_UNIQUE_ASSERTIONS];
+  bool seen_assertion_occupied[GMT_MAX_UNIQUE_ASSERTIONS];
   bool test_failed;
 
   // ----- Runtime -----

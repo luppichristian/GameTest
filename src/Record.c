@@ -257,6 +257,35 @@ void GMT_Record_FreeReplay(void) {
   g_gmt.replay_signal_cursor = 0;
 }
 
+GMT_FileMetrics GMT_Record_GetReplayMetrics(void) {
+  GMT_FileMetrics m;
+  memset(&m, 0, sizeof(m));
+  m.input_count = g_gmt.replay_input_count;
+  m.signal_count = g_gmt.replay_signal_count;
+  m.duration = (g_gmt.replay_input_count > 0)
+                   ? g_gmt.replay_inputs[g_gmt.replay_input_count - 1].timestamp
+                   : 0.0;
+  m.input_density = (m.duration > 0.0) ? (double)m.input_count / m.duration : 0.0;
+  return m;
+}
+
+GMT_FileMetrics GMT_Record_GetRecordMetrics(void) {
+  GMT_FileMetrics m;
+  memset(&m, 0, sizeof(m));
+  long file_pos = g_gmt.record_file ? ftell(g_gmt.record_file) : 0;
+  /* +1 accounts for the TAG_END byte that CloseWrite is about to append. */
+  m.file_size_bytes = (file_pos >= 0) ? file_pos + 1 : 0;
+  m.duration = GMT_Platform_GetTime() - g_gmt.record_start_time;
+  m.frame_count = g_gmt.frame_index;
+  /* Estimate input_count from file payload size. */
+  long payload = m.file_size_bytes > (long)sizeof(GMT_FileHeader)
+                     ? m.file_size_bytes - (long)sizeof(GMT_FileHeader)
+                     : 0;
+  m.input_count = (size_t)(payload / (long)(1 + sizeof(GMT_RawInputRecord)));
+  m.input_density = (m.duration > 0.0) ? (double)m.input_count / m.duration : 0.0;
+  return m;
+}
+
 void GMT_Record_InjectInput(void) {
   // If we're waiting for a sync signal, do not inject yet.
   if (g_gmt.waiting_for_signal) return;

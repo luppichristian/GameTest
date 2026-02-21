@@ -39,3 +39,11 @@ void GMT_Record_FreeReplay(void);
 // Handles sync-signal gating: refuses to inject if waiting_for_signal is set.
 // Called once per GMT_Update in REPLAY mode.
 void GMT_Record_InjectInput(void);
+
+// Returns metrics computed from the currently loaded replay data (g_gmt arrays).
+// Call only after a successful GMT_Record_LoadReplay.
+GMT_FileMetrics GMT_Record_GetReplayMetrics(void);
+
+// Returns metrics computed from the currently open recording file (g_gmt.record_file).
+// Estimates input_count from the file size.  Call before GMT_Record_CloseWrite.
+GMT_FileMetrics GMT_Record_GetRecordMetrics(void);
