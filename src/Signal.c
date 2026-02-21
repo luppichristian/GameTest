@@ -38,8 +38,16 @@ void GMT_SyncSignal_(int id, GMT_CodeLocation loc) {
       // signals that fire before the first GMT_Update call (e.g. an "Init" signal
       // placed before the main loop), where waiting_for_signal would never be set
       // when the game fires it, causing a permanent deadlock.
-      if (g_gmt.replay_signal_cursor < g_gmt.replay_signal_count &&
-          g_gmt.replay_signals[g_gmt.replay_signal_cursor].signal_id == id) {
+      if (g_gmt.replay_signal_cursor >= g_gmt.replay_signal_count) {
+        GMT_LogWarning("GMT_SyncSignal: signal id %d has no corresponding recorded entry (all %zu recorded signals already consumed); ignored.",
+                       id,
+                       g_gmt.replay_signal_count);
+      } else if (g_gmt.replay_signals[g_gmt.replay_signal_cursor].signal_id != id) {
+        GMT_LogWarning("GMT_SyncSignal: signal id %d does not match next expected id %d at cursor %zu; ignored.",
+                       id,
+                       g_gmt.replay_signals[g_gmt.replay_signal_cursor].signal_id,
+                       g_gmt.replay_signal_cursor);
+      } else {
         double now = GMT_Platform_GetTime();
         double st = g_gmt.replay_signals[g_gmt.replay_signal_cursor].timestamp;
         if (g_gmt.waiting_for_signal && g_gmt.waiting_signal_id == id) {

@@ -19,8 +19,10 @@ set(GMT_SOURCES
     src/InputState.c
     src/Log.c
     src/Memory.c
+    src/Pin.c
     src/Record.c
     src/Signal.c
+    src/Track.c
     src/Util.c
 )
 

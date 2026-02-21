@@ -103,6 +103,30 @@ void GMT_Record_WriteSignal(int32_t signal_id) {
   g_gmt.record_signal_count++;
 }
 
+void GMT_Record_WriteDataRecord(uint8_t tag, unsigned int key, unsigned int index, const void* data, size_t size) {
+  if (!g_gmt.record_file) return;
+  if (size > GMT_MAX_DATA_RECORD_PAYLOAD) {
+    GMT_LogError("GMT_Record_WriteDataRecord: payload %zu exceeds maximum %d; record skipped.", size, GMT_MAX_DATA_RECORD_PAYLOAD);
+    return;
+  }
+
+  GMT_RawDataRecordHeader hdr;
+  hdr.key = (uint32_t)key;
+  hdr.index = (uint32_t)index;
+  hdr.size = (uint32_t)size;
+
+  fwrite(&tag, 1, 1, g_gmt.record_file);
+  fwrite(&hdr, sizeof(hdr), 1, g_gmt.record_file);
+  fwrite(data, 1, size, g_gmt.record_file);
+}
+
+GMT_DecodedDataRecord* GMT_Record_FindDecoded(GMT_DecodedDataRecord* arr, size_t count, unsigned int key, unsigned int index) {
+  for (size_t i = 0; i < count; i++) {
+    if (arr[i].key == (uint32_t)key && arr[i].index == (uint32_t)index) return &arr[i];
+  }
+  return NULL;
+}
+
 // ===== REPLAY mode =====
 
 bool GMT_Record_LoadReplay(void) {
@@ -169,6 +193,8 @@ bool GMT_Record_LoadReplay(void) {
   // First pass: count records.
   size_t input_count = 0;
   size_t signal_count = 0;
+  size_t pin_count = 0;
+  size_t track_count = 0;
   {
     const uint8_t* scan = cursor;
     while (scan < end) {
@@ -188,6 +214,22 @@ bool GMT_Record_LoadReplay(void) {
         }
         scan += sizeof(GMT_RawSignalRecord);
         ++signal_count;
+      } else if (tag == GMT_RECORD_TAG_PIN || tag == GMT_RECORD_TAG_TRACK) {
+        if (scan + sizeof(GMT_RawDataRecordHeader) > end) {
+          GMT_LogError("GMT_Record: truncated pin/track header.");
+          goto cleanup;
+        }
+        GMT_RawDataRecordHeader drh;
+        memcpy(&drh, scan, sizeof(drh));
+        scan += sizeof(drh);
+        if ((size_t)drh.size > (size_t)(end - scan)) {
+          GMT_LogError("GMT_Record: truncated pin/track payload.");
+          goto cleanup;
+        }
+        scan += drh.size;
+        if (tag == GMT_RECORD_TAG_PIN) ++pin_count;
+        else
+          ++track_count;
       } else {
         GMT_LogError("GMT_Record: unknown tag in test file.");
         goto cleanup;
@@ -210,10 +252,24 @@ bool GMT_Record_LoadReplay(void) {
       goto cleanup;
     }
   }
+  if (pin_count > 0) {
+    g_gmt.replay_pins = (GMT_DecodedDataRecord*)GMT_Alloc(pin_count * sizeof(GMT_DecodedDataRecord));
+    if (!g_gmt.replay_pins) {
+      GMT_LogError("GMT_Record: allocation failed for replay pins.");
+      goto cleanup;
+    }
+  }
+  if (track_count > 0) {
+    g_gmt.replay_tracks = (GMT_DecodedDataRecord*)GMT_Alloc(track_count * sizeof(GMT_DecodedDataRecord));
+    if (!g_gmt.replay_tracks) {
+      GMT_LogError("GMT_Record: allocation failed for replay tracks.");
+      goto cleanup;
+    }
+  }
 
   // Second pass: decode.
   {
-    size_t ii = 0, si = 0;
+    size_t ii = 0, si = 0, pi = 0, ti = 0;
     while (cursor < end) {
       uint8_t tag = *cursor++;
       if (tag == GMT_RECORD_TAG_END) break;
@@ -233,12 +289,27 @@ bool GMT_Record_LoadReplay(void) {
         GMT_DecodedSignal* ds = &g_gmt.replay_signals[si++];
         ds->timestamp = raw.timestamp;
         ds->signal_id = raw.signal_id;
+      } else if (tag == GMT_RECORD_TAG_PIN || tag == GMT_RECORD_TAG_TRACK) {
+        GMT_RawDataRecordHeader hdr;
+        memcpy(&hdr, cursor, sizeof(hdr));
+        cursor += sizeof(hdr);
+
+        GMT_DecodedDataRecord* dr = (tag == GMT_RECORD_TAG_PIN)
+                                        ? &g_gmt.replay_pins[pi++]
+                                        : &g_gmt.replay_tracks[ti++];
+        dr->key = hdr.key;
+        dr->index = hdr.index;
+        dr->size = hdr.size;
+        if (hdr.size > 0) memcpy(dr->data, cursor, hdr.size);
+        cursor += hdr.size;
       }
     }
   }
 
   g_gmt.replay_input_count = input_count;
   g_gmt.replay_signal_count = signal_count;
+  g_gmt.replay_pin_count = pin_count;
+  g_gmt.replay_track_count = track_count;
   ok = true;
 
 cleanup:
@@ -255,8 +326,18 @@ void GMT_Record_FreeReplay(void) {
     GMT_Free(g_gmt.replay_signals);
     g_gmt.replay_signals = NULL;
   }
+  if (g_gmt.replay_pins) {
+    GMT_Free(g_gmt.replay_pins);
+    g_gmt.replay_pins = NULL;
+  }
+  if (g_gmt.replay_tracks) {
+    GMT_Free(g_gmt.replay_tracks);
+    g_gmt.replay_tracks = NULL;
+  }
   g_gmt.replay_input_count = 0;
   g_gmt.replay_signal_count = 0;
+  g_gmt.replay_pin_count = 0;
+  g_gmt.replay_track_count = 0;
   g_gmt.replay_input_cursor = 0;
   g_gmt.replay_signal_cursor = 0;
 }

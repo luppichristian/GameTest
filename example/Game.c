@@ -22,6 +22,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 */
 
+// Uncomment to strip all GameTest calls at compile time (zero overhead, production builds).
 // #define GMT_DISABLE
 #include <GameTest.h>
 
@@ -66,6 +67,14 @@ static void place_food(void) {
     if (ok) {
       G.food.x = x;
       G.food.y = y;
+
+      // Food must land on a cell inside the grid and not on any snake segment.
+      GMT_AssertMsg(G.food.x >= 0 && G.food.x < GRID_W && G.food.y >= 0 && G.food.y < GRID_H,
+                    "Food placed outside grid");
+      for (int i = 0; i < G.length; i++) {
+        GMT_AssertMsg(!(G.body[i].x == G.food.x && G.body[i].y == G.food.y),
+                      "Food placed on top of snake body");
+      }
       return;
     }
   }
@@ -77,6 +86,10 @@ static void queue_dir(Direction d) {
       (cur == DIR_LEFT && d == DIR_RIGHT) || (cur == DIR_RIGHT && d == DIR_LEFT) || cur == d)
     return;
   if (G.input_count < 2) G.input_queue[G.input_count++] = d;
+
+  // Input queue must never exceed its capacity of 2.
+  GMT_AssertMsg(G.input_count >= 0 && G.input_count <= 2,
+                "Input queue count out of range");
 }
 
 static void game_init(void) {
@@ -89,6 +102,20 @@ static void game_init(void) {
     G.body[i].y = GRID_H / 2;
   }
   place_food();
+
+  // Verify the game starts in a known valid state.
+  GMT_AssertEqualMsg(G.length, 3, "Snake must start with length 3");
+  GMT_AssertEqualMsg(G.dir, DIR_RIGHT, "Snake must start facing right");
+  GMT_AssertFalseMsg(G.game_over, "game_over must be clear after init");
+  GMT_AssertMsg(G.tick_rate > 0.0, "Tick rate must be positive");
+  GMT_AssertEqualMsg(G.input_count, 0, "Input queue must be empty after init");
+  // All starting body segments must be inside the grid.
+  for (int i = 0; i < G.length; i++) {
+    GMT_AssertMsg(G.body[i].x >= 0 && G.body[i].x < GRID_W && G.body[i].y >= 0 && G.body[i].y < GRID_H,
+                  "Starting body segment outside grid");
+  }
+  GMT_AssertMsg(G.food.x >= 0 && G.food.x < GRID_W && G.food.y >= 0 && G.food.y < GRID_H,
+                "Initial food position must be inside the grid");
 }
 
 static void game_step(void) {
@@ -115,10 +142,29 @@ static void game_step(void) {
       return;
     }
   int ate = (head.x == G.food.x && head.y == G.food.y);
+  int prev_length = G.length;
   for (int i = ate ? G.length : G.length - 1; i > 0; i--) G.body[i] = G.body[i - 1];
   if (ate) G.length++;
   G.body[0] = head;
-  if (ate) place_food();
+  if (ate)
+    place_food();
+
+  // Snake length must always stay within valid bounds.
+  GMT_AssertMsg(G.length > 0 && G.length <= MAX_SNAKE, "Snake length out of bounds after step");
+
+  // Eating must increase length by exactly 1; not eating must leave it unchanged.
+  if (ate) {
+    GMT_AssertEqualMsg(G.length, prev_length + 1, "Length must increase by 1 after eating");
+  } else {
+    GMT_AssertEqualMsg(G.length, prev_length, "Length must not change when not eating");
+  }
+  // Head must be inside the grid after a successful step.
+  GMT_AssertMsg(G.body[0].x >= 0 && G.body[0].x < GRID_W && G.body[0].y >= 0 && G.body[0].y < GRID_H,
+                "Snake head out of grid after step");
+
+  // Food must remain inside the grid after the step.
+  GMT_AssertMsg(G.food.x >= 0 && G.food.x < GRID_W && G.food.y >= 0 && G.food.y < GRID_H,
+                "Food outside grid after step");
 }
 
 static void draw_quad(float x, float y, float w, float h, float r, float g, float b) {
@@ -197,29 +243,44 @@ static void key_callback(GLFWwindow* win, int key, int scancode, int action, int
 }
 
 int main(int argc, char** argv) {
-#ifdef GMT_DISABLE
-  srand((unsigned int)time(NULL));
-#else
-  srand(0);  // Fixed seed for deterministic behavior during tests
-#endif
-
   {
-    // Init GameTest with command-line args.
+    // Initialize GameTest.
+    //
+    // GMT_ParseTestMode  reads --test-mode=record|replay|disabled from argv.
+    // GMT_ParseTestFilePath reads --test=<path> from argv.
+    // Pass these to GMT_Init so the framework knows what to do this run.
+    // In a normal (non-test) launch both args are absent and the mode defaults
+    // to GMT_Mode_DISABLED, making every GameTest call a no-op.
 
     char test_name[256] = {0};
     GMT_Mode test_mode = GMT_Mode_DISABLED;
-    GMT_ParseTestMode(argv, argc, &test_mode);
-    GMT_ParseTestFilePath(argv, argc, test_name, sizeof(test_name));
+    GMT_ParseTestMode((const char**)argv, argc, &test_mode);
+    GMT_ParseTestFilePath((const char**)argv, argc, test_name, sizeof(test_name));
 
     GMT_Setup setup = {
         .mode = test_mode,
         .test_path = test_name,
+        // Fail immediately on the first assertion failure so the test runner
+        // gets a clear non-zero exit code without letting the game run further.
         .fail_assertion_trigger_count = 1,
     };
 
     if (!GMT_Init(&setup)) {
       fprintf(stderr, "Failed to initialize GameTest\n");
     }
+  }
+
+  {
+    // Pin the random seed so that food placement is identical across record and
+    // replay runs.  GMT_Pin reads the current value during RECORD and writes it
+    // to the test file; during REPLAY it overwrites the variable with the stored
+    // value so rand() produces the same sequence as the original recording.
+    // This call must come after GMT_Init because the framework must be running.
+    unsigned int seed = (unsigned int)time(NULL);
+    GMT_PinUIntString("seed", &seed);
+    srand(seed);
+
+    GMT_LogInfo("Random seed: %u", seed);
   }
 
   GLFWwindow* win = NULL;
@@ -245,13 +306,21 @@ int main(int argc, char** argv) {
 
   // Init game
   game_init();
+
+  // Emit a sync signal called "Init" to mark the end of the loading/init phase.
+  // In RECORD mode this timestamp is saved to the test file.
+  // In REPLAY mode the framework suspends input injection here and waits until
+  // the game calls this function before resuming, so that any variation in
+  // startup time between runs does not shift all recorded input timestamps.
   GMT_SyncSignalString("Init");
 
   // Main loop
   {
     double prev = glfwGetTime();
     while (!glfwWindowShouldClose(win)) {
-      // Update GameTest
+      // Advance the GameTest frame counter and drive recording/replay.
+      // Must be called once per frame, before polling input or running game logic,
+      // so that injected input is visible to glfwPollEvents on this same frame.
       GMT_Update();
 
       // Update and render the game
@@ -267,9 +336,22 @@ int main(int argc, char** argv) {
   }
 
   {
-    // Quit
+    // Score can never be less than the starting length of 3.
+    GMT_AssertMsg(G.length >= 3, "Final score must be at least the starting length");
+
+    // GMT_Track checks that a value matches between record and replay.
+    // In RECORD mode: snapshots G.length and stores it in the test file.
+    // In REPLAY mode: compares G.length against the stored snapshot and
+    // triggers an assertion failure if they differ, catching any divergence
+    // in game logic that caused a different score.
+    GMT_TrackIntString("score", G.length);
+    GMT_LogInfo("Final score: %d", G.length);
+
     glfwDestroyWindow(win);
     glfwTerminate();
+
+    // Flush the recording to disk (RECORD), free replay data (REPLAY),
+    // print the test report, and clean up all framework state.
     GMT_Quit();
   }
 

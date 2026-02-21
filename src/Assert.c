@@ -67,7 +67,15 @@ void GMT_Assert_(bool condition, const char* msg, GMT_CodeLocation loc) {
 
   if (trigger_cb) {
     GMT_Assertion a = {NULL, msg, loc};
+    // Deactivate replay input-blocking before the callback: the callback may
+    // open a dialog (e.g. a custom assert popup) that needs real keyboard/mouse
+    // input.  Re-enable afterwards only if replay is still running and the test
+    // was not already failed by the callback itself.
+    GMT_Platform_SetReplayHooksActive(false);
     trigger_cb(a);
+    if (g_gmt.mode == GMT_Mode_REPLAY && !g_gmt.test_failed) {
+      GMT_Platform_SetReplayHooksActive(true);
+    }
   }
 
   if (trigger_count <= 1) trigger_count = 1;

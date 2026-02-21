@@ -319,6 +319,139 @@ GMT_API void GMT_SyncSignal_(int id, GMT_CodeLocation loc);
 #  define GMT_SyncSignalAuto()         ((void)0)
 #endif
 
+// ===== Pin =====
+
+// Pins a variable to its recorded value, making it consistent across record and replay runs.
+//
+// Record mode: reads the current value of *value and stores it in the test file. *value is unchanged.
+// Replay mode: overwrites *value with the value that was stored during recording.
+// Disabled mode: no-op.
+//
+// Calls with the same key are matched sequentially: the first call with key K is paired with the
+// first recorded entry for K, the second call with the second entry, and so on. This means Pin can
+// be used inside loops or at multiple call sites with the same key, as long as the number and order
+// of calls is identical between record and replay. The sequential counter resets each frame (GMT_Update).
+//
+// Typical use: pinning a random seed so replay is deterministic.
+//   unsigned int seed = (unsigned int)time(NULL);
+//   GMT_PinUIntAuto(&seed);
+//   srand(seed);
+
+GMT_API void GMT_PinInt_(unsigned int key, int* value, GMT_CodeLocation loc);
+GMT_API void GMT_PinUInt_(unsigned int key, unsigned int* value, GMT_CodeLocation loc);
+GMT_API void GMT_PinFloat_(unsigned int key, float* value, GMT_CodeLocation loc);
+GMT_API void GMT_PinDouble_(unsigned int key, double* value, GMT_CodeLocation loc);
+GMT_API void GMT_PinBool_(unsigned int key, bool* value, GMT_CodeLocation loc);
+GMT_API void GMT_PinBytes_(unsigned int key, void* data, size_t size, GMT_CodeLocation loc);
+
+#ifndef GMT_DISABLE
+#  define GMT_PinInt(key, value)              GMT_PinInt_(key, value, GMT_LOCATION())
+#  define GMT_PinIntString(str, value)        GMT_PinInt_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_PinIntAuto(value)               GMT_PinInt_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_PinUInt(key, value)             GMT_PinUInt_(key, value, GMT_LOCATION())
+#  define GMT_PinUIntString(str, value)       GMT_PinUInt_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_PinUIntAuto(value)              GMT_PinUInt_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_PinFloat(key, value)            GMT_PinFloat_(key, value, GMT_LOCATION())
+#  define GMT_PinFloatString(str, value)      GMT_PinFloat_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_PinFloatAuto(value)             GMT_PinFloat_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_PinDouble(key, value)           GMT_PinDouble_(key, value, GMT_LOCATION())
+#  define GMT_PinDoubleString(str, value)     GMT_PinDouble_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_PinDoubleAuto(value)            GMT_PinDouble_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_PinBool(key, value)             GMT_PinBool_(key, value, GMT_LOCATION())
+#  define GMT_PinBoolString(str, value)       GMT_PinBool_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_PinBoolAuto(value)              GMT_PinBool_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_PinBytes(key, data, size)       GMT_PinBytes_(key, data, size, GMT_LOCATION())
+#  define GMT_PinBytesString(str, data, size) GMT_PinBytes_((unsigned int)GMT_HashString_(str), data, size, GMT_LOCATION())
+#  define GMT_PinBytesAuto(data, size)        GMT_PinBytes_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), data, size, GMT_LOCATION())
+#else
+#  define GMT_PinInt(key, value)              ((void)0)
+#  define GMT_PinIntString(str, value)        ((void)0)
+#  define GMT_PinIntAuto(value)               ((void)0)
+#  define GMT_PinUInt(key, value)             ((void)0)
+#  define GMT_PinUIntString(str, value)       ((void)0)
+#  define GMT_PinUIntAuto(value)              ((void)0)
+#  define GMT_PinFloat(key, value)            ((void)0)
+#  define GMT_PinFloatString(str, value)      ((void)0)
+#  define GMT_PinFloatAuto(value)             ((void)0)
+#  define GMT_PinDouble(key, value)           ((void)0)
+#  define GMT_PinDoubleString(str, value)     ((void)0)
+#  define GMT_PinDoubleAuto(value)            ((void)0)
+#  define GMT_PinBool(key, value)             ((void)0)
+#  define GMT_PinBoolString(str, value)       ((void)0)
+#  define GMT_PinBoolAuto(value)              ((void)0)
+#  define GMT_PinBytes(key, data, size)       ((void)0)
+#  define GMT_PinBytesString(str, data, size) ((void)0)
+#  define GMT_PinBytesAuto(data, size)        ((void)0)
+#endif
+
+// ===== Track =====
+
+// Tracks a variable and verifies it matches the recorded value during replay.
+//
+// Record mode: snapshots the current value and stores it in the test file.
+// Replay mode: compares the current value against the stored snapshot; triggers an assertion
+//              failure (same path as GMT_Assert) if the values do not match.
+// Disabled mode: no-op.
+//
+// Calls with the same key are matched sequentially: the first call with key K is compared against
+// the first recorded snapshot for K, the second call against the second snapshot, and so on. This
+// allows Track to be called inside loops or at multiple call sites with the same key. The sequential
+// counter resets each frame (GMT_Update). If replay reaches a key with no remaining recorded entry
+// (i.e. more calls than were made during recording), the assertion fails immediately.
+//
+// Float/double comparisons use GMT_FLOAT_EPSILON / GMT_DOUBLE_EPSILON respectively.
+// Bytes comparison uses memcmp.
+//
+// Typical use: verifying that a score or game state matches the recording after replay.
+//   GMT_TrackIntAuto(G.length);
+
+GMT_API void GMT_TrackInt_(unsigned int key, int value, GMT_CodeLocation loc);
+GMT_API void GMT_TrackUInt_(unsigned int key, unsigned int value, GMT_CodeLocation loc);
+GMT_API void GMT_TrackFloat_(unsigned int key, float value, GMT_CodeLocation loc);
+GMT_API void GMT_TrackDouble_(unsigned int key, double value, GMT_CodeLocation loc);
+GMT_API void GMT_TrackBool_(unsigned int key, bool value, GMT_CodeLocation loc);
+GMT_API void GMT_TrackBytes_(unsigned int key, const void* data, size_t size, GMT_CodeLocation loc);
+
+#ifndef GMT_DISABLE
+#  define GMT_TrackInt(key, value)              GMT_TrackInt_(key, value, GMT_LOCATION())
+#  define GMT_TrackIntString(str, value)        GMT_TrackInt_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_TrackIntAuto(value)               GMT_TrackInt_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_TrackUInt(key, value)             GMT_TrackUInt_(key, value, GMT_LOCATION())
+#  define GMT_TrackUIntString(str, value)       GMT_TrackUInt_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_TrackUIntAuto(value)              GMT_TrackUInt_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_TrackFloat(key, value)            GMT_TrackFloat_(key, value, GMT_LOCATION())
+#  define GMT_TrackFloatString(str, value)      GMT_TrackFloat_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_TrackFloatAuto(value)             GMT_TrackFloat_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_TrackDouble(key, value)           GMT_TrackDouble_(key, value, GMT_LOCATION())
+#  define GMT_TrackDoubleString(str, value)     GMT_TrackDouble_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_TrackDoubleAuto(value)            GMT_TrackDouble_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_TrackBool(key, value)             GMT_TrackBool_(key, value, GMT_LOCATION())
+#  define GMT_TrackBoolString(str, value)       GMT_TrackBool_((unsigned int)GMT_HashString_(str), value, GMT_LOCATION())
+#  define GMT_TrackBoolAuto(value)              GMT_TrackBool_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), value, GMT_LOCATION())
+#  define GMT_TrackBytes(key, data, size)       GMT_TrackBytes_(key, data, size, GMT_LOCATION())
+#  define GMT_TrackBytesString(str, data, size) GMT_TrackBytes_((unsigned int)GMT_HashString_(str), data, size, GMT_LOCATION())
+#  define GMT_TrackBytesAuto(data, size)        GMT_TrackBytes_((unsigned int)GMT_HashCodeLocation_(GMT_LOCATION()), data, size, GMT_LOCATION())
+#else
+#  define GMT_TrackInt(key, value)              ((void)0)
+#  define GMT_TrackIntString(str, value)        ((void)0)
+#  define GMT_TrackIntAuto(value)               ((void)0)
+#  define GMT_TrackUInt(key, value)             ((void)0)
+#  define GMT_TrackUIntString(str, value)       ((void)0)
+#  define GMT_TrackUIntAuto(value)              ((void)0)
+#  define GMT_TrackFloat(key, value)            ((void)0)
+#  define GMT_TrackFloatString(str, value)      ((void)0)
+#  define GMT_TrackFloatAuto(value)             ((void)0)
+#  define GMT_TrackDouble(key, value)           ((void)0)
+#  define GMT_TrackDoubleString(str, value)     ((void)0)
+#  define GMT_TrackDoubleAuto(value)            ((void)0)
+#  define GMT_TrackBool(key, value)             ((void)0)
+#  define GMT_TrackBoolString(str, value)       ((void)0)
+#  define GMT_TrackBoolAuto(value)              ((void)0)
+#  define GMT_TrackBytes(key, data, size)       ((void)0)
+#  define GMT_TrackBytesString(str, data, size) ((void)0)
+#  define GMT_TrackBytesAuto(data, size)        ((void)0)
+#endif
+
 // ===== Details =====
 
 // Thread safety: Yes.

@@ -13,8 +13,10 @@
 
 // ===== Limits =====
 
-#define GMT_MAX_FAILED_ASSERTIONS 1024
-#define GMT_MAX_UNIQUE_ASSERTIONS 2048
+#define GMT_MAX_FAILED_ASSERTIONS   1024
+#define GMT_MAX_UNIQUE_ASSERTIONS   2048
+#define GMT_MAX_DATA_RECORD_PAYLOAD 256  // Maximum payload bytes for a single Pin/Track entry.
+#define GMT_KEY_COUNTER_SLOTS       512  // Hash-map slots for the per-frame sequential key counters.
 
 // ===== Record File Format =====
 //
@@ -28,10 +30,12 @@
 // All multi-byte integers are little-endian.
 
 #define GMT_RECORD_MAGIC   0x5447u  // 'GT' in memory (little-endian)
-#define GMT_RECORD_VERSION 2u
+#define GMT_RECORD_VERSION 3u
 
 #define GMT_RECORD_TAG_INPUT  ((uint8_t)0x01)
 #define GMT_RECORD_TAG_SIGNAL ((uint8_t)0x02)
+#define GMT_RECORD_TAG_PIN    ((uint8_t)0x03)
+#define GMT_RECORD_TAG_TRACK  ((uint8_t)0x04)
 #define GMT_RECORD_TAG_END    ((uint8_t)0xFF)
 
 // Fixed-size file header written at the start of every test file.
@@ -52,6 +56,13 @@ typedef struct GMT_RawSignalRecord {
   double timestamp;  // Seconds since start of recording.
   int32_t signal_id;
 } GMT_RawSignalRecord;
+
+// Header of a TAG_PIN / TAG_TRACK record (variable-length payload follows immediately).
+typedef struct GMT_RawDataRecordHeader {
+  uint32_t key;    // User-supplied key.
+  uint32_t index;  // Sequential call index for this key within the current frame.
+  uint32_t size;   // Byte length of the payload that follows.
+} GMT_RawDataRecordHeader;
 #pragma pack(pop)
 
 // ===== File metrics (used for logging after load/before close) =====
@@ -66,6 +77,47 @@ typedef struct GMT_FileMetrics {
 } GMT_FileMetrics;
 
 // ===== In-memory decoded records (used during REPLAY) =====
+
+// Decoded entry for a TAG_PIN or TAG_TRACK record.
+typedef struct GMT_DecodedDataRecord {
+  uint32_t key;
+  uint32_t index;
+  uint32_t size;
+  uint8_t data[GMT_MAX_DATA_RECORD_PAYLOAD];
+} GMT_DecodedDataRecord;
+
+// ===== Per-frame sequential key counter =====
+//
+// Tracks how many times each key has been seen in the current frame so that
+// repeated calls with the same key can be matched sequentially (call 0 → entry 0,
+// call 1 → entry 1, …).  Reset by GMT_Update_ and GMT_Reset_.
+
+typedef struct GMT_KeyCounter {
+  unsigned int keys[GMT_KEY_COUNTER_SLOTS];
+  unsigned int counts[GMT_KEY_COUNTER_SLOTS];
+  bool occupied[GMT_KEY_COUNTER_SLOTS];
+} GMT_KeyCounter;
+
+// Returns the current sequential index for key and increments it.
+// Must be called with the mutex held.
+static inline unsigned int GMT_KeyCounter_Next(GMT_KeyCounter* kc, unsigned int key) {
+  unsigned int slot = key % (unsigned int)GMT_KEY_COUNTER_SLOTS;
+  for (unsigned int i = 0; i < (unsigned int)GMT_KEY_COUNTER_SLOTS; i++) {
+    unsigned int s = (slot + i) % (unsigned int)GMT_KEY_COUNTER_SLOTS;
+    if (!kc->occupied[s]) {
+      kc->keys[s] = key;
+      kc->counts[s] = 1;
+      kc->occupied[s] = true;
+      return 0;
+    }
+    if (kc->keys[s] == key) return kc->counts[s]++;
+  }
+  return 0;  // Counter table full; saturate.
+}
+
+static inline void GMT_KeyCounter_Reset(GMT_KeyCounter* kc) {
+  memset(kc, 0, sizeof(*kc));
+}
 
 typedef struct GMT_DecodedInput {
   double timestamp;  // Seconds since start of recording.
@@ -137,6 +189,18 @@ typedef struct GMT_State {
 
   // Previous per-frame input state, used to compute deltas for injection.
   GMT_InputState replay_prev_input;
+
+  // ----- PIN replay data -----
+  GMT_DecodedDataRecord* replay_pins;
+  size_t replay_pin_count;
+
+  // ----- TRACK replay data -----
+  GMT_DecodedDataRecord* replay_tracks;
+  size_t replay_track_count;
+
+  // Per-key sequential counters; reset at the start of each frame (GMT_Update_) and on GMT_Reset_.
+  GMT_KeyCounter pin_counter;
+  GMT_KeyCounter track_counter;
 
   // Current replayed input state for this frame.  Updated by InjectInput each
   // frame and read by the hooked Win32 input functions (GetAsyncKeyState etc.)

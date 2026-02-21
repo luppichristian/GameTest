@@ -26,6 +26,14 @@ void GMT_Record_WriteInput(void);
 // Called from GMT_SyncSignal_ in RECORD mode.
 void GMT_Record_WriteSignal(int32_t signal_id);
 
+// Appends a TAG_PIN or TAG_TRACK record with the given key, sequential index, and raw payload.
+// Called from GMT_Pin_* and GMT_Track_* in RECORD mode.
+void GMT_Record_WriteDataRecord(uint8_t tag, unsigned int key, unsigned int index, const void* data, size_t size);
+
+// Searches a decoded pin/track array for an entry matching (key, index).
+// Returns a pointer to the matching GMT_DecodedDataRecord, or NULL if not found.
+GMT_DecodedDataRecord* GMT_Record_FindDecoded(GMT_DecodedDataRecord* arr, size_t count, unsigned int key, unsigned int index);
+
 // Loads the test file and decodes all input and signal records into g_gmt arrays.
 // Allocates replay_inputs and replay_signals via GMT_Alloc.
 // Called during GMT_Init when mode == GMT_Mode_REPLAY.

@@ -173,6 +173,10 @@ void GMT_Update_(void) {
 
   GMT_Platform_MutexLock();
 
+  // Reset per-frame sequential key counters for Pin and Track.
+  GMT_KeyCounter_Reset(&g_gmt.pin_counter);
+  GMT_KeyCounter_Reset(&g_gmt.track_counter);
+
   switch (g_gmt.mode) {
     case GMT_Mode_RECORD:
       GMT_Record_WriteInput();
@@ -224,6 +228,8 @@ void GMT_Reset_(void) {
   g_gmt.waiting_for_signal = false;
   g_gmt.waiting_signal_id = 0;
   GMT_InputState_Clear(&g_gmt.replay_prev_input);
+  GMT_KeyCounter_Reset(&g_gmt.pin_counter);
+  GMT_KeyCounter_Reset(&g_gmt.track_counter);
 
   // Reset the recording / replay clock.
   g_gmt.record_start_time = GMT_Platform_GetTime();
@@ -241,6 +247,12 @@ void GMT_Fail_(void) {
   g_gmt.test_failed = true;
   GMT_LogError("Test marked as failed on frame %u.", g_gmt.frame_index);
   GMT_Platform_MutexUnlock();
+
+  // Remove input-blocking hooks before invoking any callback that may open a
+  // dialog.  During replay the LL hooks swallow all real keyboard and mouse
+  // events; without this the user cannot interact with (or dismiss) error
+  // dialogs such as the OS crash prompt from abort().
+  GMT_Platform_RemoveInputHooks();
 
   // Dereference pointer-to-function-pointer pattern used for overridable callbacks.
   if (g_gmt.setup.fail_callback && *g_gmt.setup.fail_callback) {

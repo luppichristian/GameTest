@@ -45,6 +45,7 @@
 #include <windows.h>
 #include <psapi.h> /* EnumProcessModules */
 #include <xinput.h>
+#include <signal.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -68,6 +69,13 @@ static CRITICAL_SECTION g_mutex;
 
 static double g_perf_freq_inv = 0.0;  // 1.0 / QueryPerformanceFrequency
 
+// ===== Crash / abort safety net globals =====
+// Declared here so RemoveInputHooks (below) can reference them before the
+// handler functions are defined.
+static void (*g_prev_sigabrt_handler)(int) = NULL;
+static LPTOP_LEVEL_EXCEPTION_FILTER g_prev_exception_filter = NULL;
+static bool g_exception_filter_installed = false;
+
 static LRESULT CALLBACK GMT__MouseLLHook(int nCode, WPARAM wParam, LPARAM lParam) {
   if (nCode == HC_ACTION) {
     MSLLHOOKSTRUCT* ms = (MSLLHOOKSTRUCT*)lParam;
@@ -76,7 +84,10 @@ static LRESULT CALLBACK GMT__MouseLLHook(int nCode, WPARAM wParam, LPARAM lParam
     // user's physical mouse cannot interfere with the replayed input.  Injected
     // events produced by our own SendInput calls carry LLMHF_INJECTED and are
     // allowed through.
-    if (g_gmt.initialized && g_gmt.mode == GMT_Mode_REPLAY) {
+    // Stop blocking once the test has failed: any dialog (including ones from
+    // non-GMT assertions such as CRT assert() or third-party libs) must remain
+    // interactive.
+    if (g_gmt.initialized && g_gmt.mode == GMT_Mode_REPLAY && !g_gmt.test_failed) {
       if (!(ms->flags & LLMHF_INJECTED)) {
         return 1;  // Swallow real mouse event.
       }
@@ -248,7 +259,10 @@ static LRESULT CALLBACK GMT__KeyboardLLHook(int nCode, WPARAM wParam, LPARAM lPa
 
     // In REPLAY mode, block ALL real (non-injected) keyboard events so that
     // physical keys never reach the application's message queue.
-    if (g_gmt.initialized && g_gmt.mode == GMT_Mode_REPLAY) {
+    // Stop blocking once the test has failed: any dialog (including ones from
+    // non-GMT assertions such as CRT assert() or third-party libs) must remain
+    // interactive.
+    if (g_gmt.initialized && g_gmt.mode == GMT_Mode_REPLAY && !g_gmt.test_failed) {
       if (!(kb->flags & LLKHF_INJECTED)) {
         return 1;  // Swallow real keyboard event.
       }
@@ -1276,6 +1290,21 @@ void GMT_Platform_RemoveInputHooks(void) {
   // Deactivate hooks first so any in-flight calls fall through.
   InterlockedExchange(&g_replay_hooks_active, 0);
 
+  // Restore abort-signal and unhandled-exception handlers installed by Init.
+  // Guards prevent double-restoration if this function is called more than once.
+  if (g_prev_sigabrt_handler) {
+    signal(SIGABRT, g_prev_sigabrt_handler);
+    g_prev_sigabrt_handler = NULL;
+  }
+  // g_prev_exception_filter may legitimately be NULL (meaning no prior filter
+  // was installed); we still call SetUnhandledExceptionFilter to restore the
+  // OS default.  The flag guards against double-restoration.
+  if (g_exception_filter_installed) {
+    SetUnhandledExceptionFilter(g_prev_exception_filter);
+    g_prev_exception_filter = NULL;
+    g_exception_filter_installed = false;
+  }
+
   // Restore IAT entries — user32 functions.
   GMT__UnpatchAllModules("user32.dll", (const void*)GMT_Hook_GetAsyncKeyState, (void*)g_orig_GetAsyncKeyState);
   GMT__UnpatchAllModules("user32.dll", (const void*)GMT_Hook_GetKeyState, (void*)g_orig_GetKeyState);
@@ -1366,6 +1395,36 @@ void GMT_Platform_SetReplayHooksActive(bool active) {
   InterlockedExchange(&g_replay_hooks_active, active ? 1 : 0);
 }
 
+// ===== Crash / abort safety net for non-GMT assertions =====
+//
+// Any assertion outside the GMT framework (CRT assert(), third-party libs,
+// custom abort() calls, access violations, etc.) will not set test_failed and
+// therefore won't release the input-blocking LL hooks through the normal path.
+// Two OS-level handlers catch these cases and call RemoveInputHooks() so that
+// the resulting dialog is fully interactive.
+
+// Called when any code calls abort() or the CRT assert() macro fires.
+static void GMT__AbortSignalHandler(int sig) {
+  (void)sig;
+  // Unhook first (also restores the original SIGABRT handler and SEH filter).
+  GMT_Platform_RemoveInputHooks();
+  // Re-raise with the default handler so the normal abort dialog / core dump
+  // appears exactly as it would without GameTest.
+  signal(SIGABRT, SIG_DFL);
+  raise(SIGABRT);
+}
+
+// Called for unhandled SEH exceptions: access violations, __debugbreak() with
+// no debugger attached, and similar crashes.
+static LONG WINAPI GMT__UnhandledExceptionFilter(EXCEPTION_POINTERS* ep) {
+  GMT_Platform_RemoveInputHooks();
+  // Pass control to whatever filter was installed before us (or the OS default).
+  if (g_prev_exception_filter) {
+    return g_prev_exception_filter(ep);
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
 double GMT_Platform_GetTime(void) {
   LARGE_INTEGER now;
   QueryPerformanceCounter(&now);
@@ -1402,6 +1461,22 @@ void GMT_Platform_Init(void) {
   }
   if (!g_keyboard_hook) {
     g_keyboard_hook = SetWindowsHookExA(WH_KEYBOARD_LL, GMT__KeyboardLLHook, NULL, 0);
+  }
+
+  // Install crash / abort safety nets so that non-GMT assertions (CRT assert(),
+  // third-party libs, raw abort() calls, SEH crashes) still remove the
+  // input-blocking hooks before any dialog is displayed.
+  if (!g_prev_sigabrt_handler) {
+    void (*prev)(int) = signal(SIGABRT, GMT__AbortSignalHandler);
+    if (prev != SIG_ERR) {
+      g_prev_sigabrt_handler = prev ? prev : SIG_DFL;
+    }
+  }
+  if (!g_exception_filter_installed) {
+    // SetUnhandledExceptionFilter returns NULL when there was no previous
+    // filter; we save that too so we can restore the same state on cleanup.
+    g_prev_exception_filter = SetUnhandledExceptionFilter(GMT__UnhandledExceptionFilter);
+    g_exception_filter_installed = true;
   }
 }
 
