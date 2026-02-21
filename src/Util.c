@@ -79,6 +79,8 @@ bool GMT_ParseTestMode(const char** args, size_t arg_count, GMT_Mode* out_mode) 
 // ===== Report =====
 
 void GMT_PrintReport(void) {
+  if (g_gmt.mode == GMT_Mode_DISABLED) return;
+
   size_t failures = 0;
   if (!GMT_GetFailedAssertions(NULL, 0, &failures)) {
     GMT_LogError("Failed to get failed assertions for report");

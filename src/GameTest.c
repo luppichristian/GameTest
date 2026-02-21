@@ -34,13 +34,19 @@ bool GMT_Init(const GMT_Setup* setup) {
   // Zero the state before populating it.
   memset(&g_gmt, 0, sizeof(g_gmt));
 
-  // Install platform input hooks (e.g. mouse wheel accumulator).
-  GMT_Platform_Init();
-
-  // Shallow-copy the setup.  The caller is responsible for keeping any
-  // strings and arrays (test_path, work_dir, directory_mappings) alive.
+  // Shallow-copy the setup first so we know the mode before touching the platform.
+  // The caller is responsible for keeping any strings and arrays alive.
   g_gmt.setup = *setup;
   g_gmt.mode = setup->mode;
+
+  // In DISABLED mode skip all platform hooks and timers.
+  if (g_gmt.mode == GMT_Mode_DISABLED) {
+    g_gmt.initialized = true;
+    return true;
+  }
+
+  // Install platform input hooks (e.g. mouse wheel accumulator).
+  GMT_Platform_Init();
 
   // Optional working directory.
   if (setup->work_dir && setup->work_dir[0] != '\0') {
@@ -90,6 +96,11 @@ bool GMT_Init(const GMT_Setup* setup) {
 void GMT_Quit(void) {
   if (!g_gmt.initialized) return;
 
+  if (g_gmt.mode == GMT_Mode_DISABLED) {
+    memset(&g_gmt, 0, sizeof(g_gmt));
+    return;
+  }
+
   // Deactivate hooks before tearing down.
   GMT_Platform_SetReplayHooksActive(false);
 
@@ -115,6 +126,7 @@ void GMT_Quit(void) {
 
 void GMT_Update(void) {
   if (!g_gmt.initialized) return;
+  if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
   GMT_Platform_MutexLock();
 
@@ -136,6 +148,7 @@ void GMT_Update(void) {
 
 void GMT_Reset(void) {
   if (!g_gmt.initialized) return;
+  if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
   GMT_Platform_MutexLock();
 
@@ -176,6 +189,7 @@ void GMT_Reset(void) {
 
 void GMT_Fail(void) {
   if (!g_gmt.initialized) return;
+  if (g_gmt.mode == GMT_Mode_DISABLED) return;
 
   GMT_Platform_MutexLock();
   g_gmt.test_failed = true;
