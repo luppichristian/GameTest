@@ -16,6 +16,7 @@
 
 #include "Internal.h"
 #include "Record.h"
+#include "Platform.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -414,5 +415,51 @@ void GMT_Record_InjectInput(void) {
     g_gmt.replay_prev_input = di->input;
     g_gmt.replay_current_input = di->input;
     g_gmt.replay_input_cursor++;
+  }
+}
+
+// ===== Background replay injection thread =====
+//
+// Calling GMT_Record_InjectInput once per frame (every ~16 ms at 60 fps) means
+// injection can miss a frame boundary by up to one full frame when there is any
+// drift between the recording and replay clocks.  This thread calls the same
+// function every 1 ms so that injection is decoupled from frame timing entirely.
+//
+// Thread safety: GMT_Record_InjectInput already reads/writes g_gmt under the
+// framework mutex.  The thread acquires the mutex on every iteration, holds it
+// for microseconds, then releases it and sleeps 1 ms.  Contention with the main
+// thread is negligible.
+//
+// The thread must be stopped (GMT_Record_StopReplayThread) before any of the
+// replay data it accesses is freed (GMT_Record_FreeReplay).
+
+static int GMT__ReplayThreadFunc(void* arg) {
+  (void)arg;
+  while (g_gmt.replay_thread_active) {
+    GMT_Platform_MutexLock();
+    GMT_Record_InjectInput();
+    GMT_Platform_MutexUnlock();
+    GMT_Platform_SleepMs(1);
+  }
+  return 0;
+}
+
+void GMT_Record_StartReplayThread(void) {
+  g_gmt.replay_thread_active = 1;
+  g_gmt.replay_thread_handle = GMT_Platform_CreateThread(GMT__ReplayThreadFunc, NULL);
+  if (!g_gmt.replay_thread_handle) {
+    GMT_LogError("GMT_Record: failed to create replay injection thread; falling back to per-frame injection.");
+    g_gmt.replay_thread_active = 0;
+  }
+}
+
+void GMT_Record_StopReplayThread(void) {
+  // Signal the thread to stop.  This write is visible to the thread because
+  // replay_thread_active is volatile and x86/x64 stores are sequentially
+  // consistent for naturally-aligned int-sized locations.
+  g_gmt.replay_thread_active = 0;
+  if (g_gmt.replay_thread_handle) {
+    GMT_Platform_JoinThread(g_gmt.replay_thread_handle);
+    g_gmt.replay_thread_handle = NULL;
   }
 }

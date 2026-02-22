@@ -43,11 +43,14 @@
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <psapi.h> /* EnumProcessModules */
+#include <timeapi.h>  /* timeBeginPeriod / timeEndPeriod */
+#include <psapi.h>    /* EnumProcessModules */
 #include <xinput.h>
 #include <signal.h>
 #include <stdlib.h>
 #include <string.h>
+
+#pragma comment(lib, "winmm.lib")
 
 #include "Internal.h"
 #include "Platform.h"
@@ -1434,6 +1437,10 @@ double GMT_Platform_GetTime(void) {
 void GMT_Platform_Init(void) {
   InitializeCriticalSection(&g_mutex);
 
+  // Request 1ms timer resolution so that Sleep(1) wakes up within ~1ms.
+  // This is required for the background replay injection thread to be precise.
+  timeBeginPeriod(1);
+
   // Initialize high-resolution timer.
   {
     LARGE_INTEGER freq;
@@ -1489,6 +1496,8 @@ void GMT_Platform_Quit(void) {
   g_wheel_y = 0;
   memset(g_hook_key_down, 0, sizeof(g_hook_key_down));
   memset((void*)g_key_repeats, 0, sizeof(g_key_repeats));
+
+  timeEndPeriod(1);
 
   DeleteCriticalSection(&g_mutex);
 }
@@ -1768,4 +1777,45 @@ void GMT_Platform_MutexLock(void) {
 
 void GMT_Platform_MutexUnlock(void) {
   LeaveCriticalSection(&g_mutex);
+}
+
+// ===== Threading =====
+
+// Adapter struct to bridge from LPVOID to the platform-agnostic callback.
+typedef struct GMT__ThreadArgs {
+  int (*func)(void*);
+  void* arg;
+} GMT__ThreadArgs;
+
+static DWORD WINAPI GMT__ThreadProc(LPVOID param) {
+  GMT__ThreadArgs* args = (GMT__ThreadArgs*)param;
+  int (*func)(void*) = args->func;
+  void* arg = args->arg;
+  GMT_Free(args);
+  return (DWORD)func(arg);
+}
+
+void* GMT_Platform_CreateThread(int (*func)(void*), void* arg) {
+  GMT__ThreadArgs* args = GMT_Alloc(sizeof(GMT__ThreadArgs));
+  if (!args) return NULL;
+  args->func = func;
+  args->arg = arg;
+  HANDLE h = CreateThread(NULL, 0, GMT__ThreadProc, args, 0, NULL);
+  if (!h) {
+    GMT_Free(args);
+    return NULL;
+  }
+  // Elevate priority so the 1ms sleep wakes up promptly.
+  SetThreadPriority(h, THREAD_PRIORITY_ABOVE_NORMAL);
+  return (void*)h;
+}
+
+void GMT_Platform_JoinThread(void* handle) {
+  if (!handle) return;
+  WaitForSingleObject((HANDLE)handle, INFINITE);
+  CloseHandle((HANDLE)handle);
+}
+
+void GMT_Platform_SleepMs(unsigned int ms) {
+  Sleep((DWORD)ms);
 }

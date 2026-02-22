@@ -55,3 +55,11 @@ GMT_FileMetrics GMT_Record_GetReplayMetrics(void);
 // Returns metrics computed from the currently open recording file (g_gmt.record_file).
 // Estimates input_count from the file size.  Call before GMT_Record_CloseWrite.
 GMT_FileMetrics GMT_Record_GetRecordMetrics(void);
+
+// Starts / stops the background replay injection thread.
+// The thread calls GMT_Record_InjectInput every ~1 ms so that injection timing
+// is decoupled from frame boundaries, preventing one-frame timing jitter.
+// Start must be called after GMT_Record_LoadReplay.
+// Stop must be called (and waited on) before GMT_Record_FreeReplay.
+void GMT_Record_StartReplayThread(void);
+void GMT_Record_StopReplayThread(void);

@@ -122,6 +122,10 @@ bool GMT_Init_(const GMT_Setup* setup) {
   // Activate replayed-state hooks now that the clock is running.
   if (g_gmt.mode == GMT_Mode_REPLAY) {
     GMT_Platform_SetReplayHooksActive(true);
+    // Start the background thread that injects input every ~1 ms.
+    // This decouples injection from frame boundaries so that vsync jitter
+    // between runs cannot cause a direction change to land on the wrong tick.
+    GMT_Record_StartReplayThread();
   }
 
   return true;
@@ -153,6 +157,8 @@ void GMT_Quit_(void) {
     }
     case GMT_Mode_REPLAY:
       GMT_LogInfo("Freeing and stopping replay");
+      // Stop the injection thread before freeing the replay data it accesses.
+      GMT_Record_StopReplayThread();
       GMT_Record_FreeReplay();
       break;
     default:
@@ -182,7 +188,12 @@ void GMT_Update_(void) {
       GMT_Record_WriteInput();
       break;
     case GMT_Mode_REPLAY:
-      GMT_Record_InjectInput();
+      // Injection is handled by the background replay thread (started in GMT_Init_).
+      // If the thread failed to start (replay_thread_active == 0 but handle is NULL),
+      // fall back to per-frame injection here so replay still functions.
+      if (!g_gmt.replay_thread_handle && !g_gmt.replay_thread_active) {
+        GMT_Record_InjectInput();
+      }
       break;
     default:
       break;
@@ -196,6 +207,13 @@ void GMT_Update_(void) {
 void GMT_Reset_(void) {
   if (!g_gmt.initialized) return;
   if (g_gmt.mode == GMT_Mode_DISABLED) return;
+
+  // Stop the replay thread BEFORE acquiring the mutex to avoid deadlock:
+  // the thread itself acquires the mutex on each iteration, so joining it
+  // while holding the mutex here would deadlock.
+  if (g_gmt.mode == GMT_Mode_REPLAY) {
+    GMT_Record_StopReplayThread();
+  }
 
   GMT_Platform_MutexLock();
   GMT_LogInfo("Resetting session (frame_index was %u).", g_gmt.frame_index);
@@ -237,6 +255,12 @@ void GMT_Reset_(void) {
   g_gmt.signal_wait_start = 0.0;
 
   GMT_Platform_MutexUnlock();
+
+  // Restart the injection thread after the mutex is released so the thread
+  // can immediately acquire it on its first iteration.
+  if (g_gmt.mode == GMT_Mode_REPLAY) {
+    GMT_Record_StartReplayThread();
+  }
 }
 
 void GMT_Fail_(void) {

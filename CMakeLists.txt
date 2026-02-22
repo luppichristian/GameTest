@@ -45,7 +45,7 @@ endif()
 target_include_directories(GameTest PUBLIC include/)
 
 if(WIN32)
-    target_link_libraries(GameTest PRIVATE comdlg32 psapi)
+    target_link_libraries(GameTest PRIVATE comdlg32 psapi winmm)
 endif()
 
 # ---------------------------------------------------------------------------

@@ -83,3 +83,15 @@ double GMT_Platform_GetTime(void);
 // The mutex is created in GMT_Platform_Init and destroyed in GMT_Platform_Quit.
 void GMT_Platform_MutexLock(void);
 void GMT_Platform_MutexUnlock(void);
+
+// ===== Threading =====
+
+// Creates a background thread that calls func(arg) and returns an opaque handle.
+// Returns NULL on failure.  The thread starts running immediately.
+void* GMT_Platform_CreateThread(int (*func)(void*), void* arg);
+
+// Blocks until the thread associated with handle exits, then releases the handle.
+void GMT_Platform_JoinThread(void* handle);
+
+// Sleeps the calling thread for at least ms milliseconds.
+void GMT_Platform_SleepMs(unsigned int ms);

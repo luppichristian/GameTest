@@ -30,7 +30,7 @@
 // All multi-byte integers are little-endian.
 
 #define GMT_RECORD_MAGIC   0x5447u  // 'GT' in memory (little-endian)
-#define GMT_RECORD_VERSION 3u
+#define GMT_RECORD_VERSION 0u
 
 #define GMT_RECORD_TAG_INPUT  ((uint8_t)0x01)
 #define GMT_RECORD_TAG_SIGNAL ((uint8_t)0x02)
@@ -214,6 +214,12 @@ typedef struct GMT_State {
   // Whether replay is blocked waiting for a game-side sync signal.
   bool waiting_for_signal;
   int32_t waiting_signal_id;
+
+  // ----- Background replay injection thread -----
+  // The thread calls GMT_Record_InjectInput every ~1 ms so that injection is
+  // not limited to frame boundaries, eliminating one-frame timing jitter.
+  void* replay_thread_handle;         // opaque platform thread handle; NULL = not running
+  volatile int replay_thread_active;  // set to 0 to request the thread to stop
 
 } GMT_State;
 
