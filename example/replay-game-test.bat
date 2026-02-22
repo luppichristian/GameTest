@@ -1,2 +1,2 @@
 @echo off
-scripts\game-test.bat replay example\tests\playing.gmt build\GameTest-Game.exe 
+build\GameTest-Tool.exe replay example\tests\playing.gmt build\GameTest-Game.exe

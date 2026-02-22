@@ -10,7 +10,7 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 
 option(GMT_BUILD_SHARED   "Build as a shared library" OFF)
 option(GMT_BUILD_EXAMPLE  "Build example"             ON)
-option(GMT_BUILD_TOOLS    "Build auxiliary tools"     ON)
+option(GMT_BUILD_TOOL    "Build auxiliary tool"       ON)
 
 # ---------------------------------------------------------------------------
 # Library target
@@ -72,6 +72,9 @@ endif()
 # Tools
 # ---------------------------------------------------------------------------
 
-if(GMT_BUILD_TOOLS AND WIN32)
-    add_executable(GameTest-Launch-Isolated tools/LaunchIsolatedWin32.c)
+if(GMT_BUILD_TOOL AND WIN32)
+    add_executable(GameTest-Tool
+        tool/Tool.c
+        tool/ToolPlatformWin32.c
+    )
 endif()
