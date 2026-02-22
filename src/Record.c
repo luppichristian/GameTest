@@ -1,19 +1,26 @@
 /*
- * Record.c - Recording and replay engine.
- *
- * In RECORD mode: captures system input once per update and streams tagged binary
- * records to disk.  Signals are embedded inline as TAG_SIGNAL records.
- * All records carry a floating-point timestamp (seconds since start of recording)
- * so that replay is framerate-independent.
- *
- * In REPLAY mode: the test file is fully loaded at init time, decoded into
- * per-input and per-signal arrays, then fed back based on wall-clock time via
- * GMT_Record_InjectInput.  If a sync signal gates the next block of events,
- * injection is paused until the game emits that signal via GMT_SyncSignal_.
- * Time spent waiting for a signal is accumulated in replay_time_offset so
- * that subsequent timestamps remain consistent.
- */
+MIT License
 
+Copyright (c) 2026 Christian Luppi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
 #include "Internal.h"
 #include "Record.h"
 #include "Platform.h"

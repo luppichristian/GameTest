@@ -1,49 +1,31 @@
 /*
- * Platform__Win32.c - Win32 implementation of the platform abstraction layer.
- *
- * Covers: file I/O, directory management, keyboard/mouse capture and injection,
- * IAT-based Win32 input hooking for transparent replay, and CRITICAL_SECTION-
- * based mutual exclusion.
- *
- * == Replay input interception ==
- *
- * During REPLAY mode, every way a Win32 game can read input is intercepted:
- *
- *   Layer 1 — Low-level hooks (WH_KEYBOARD_LL, WH_MOUSE_LL)
- *     Block ALL real (non-injected) keyboard and mouse events so they never
- *     reach the application's message queue.  Injected events produced by
- *     SendInput pass through because they carry the LLKHF_INJECTED /
- *     LLMHF_INJECTED flag.
- *
- *   Layer 2 — IAT hooking
- *     Patches the Import Address Table of every loaded module to redirect
- *     GetAsyncKeyState, GetKeyState, GetKeyboardState, and GetCursorPos to
- *     our implementations that return the replayed input state.  This ensures
- *     polling-based games see replayed state regardless of timing.
- *
- *   Layer 3 — WH_GETMESSAGE hook
- *     Strips WM_INPUT (Raw Input) messages during replay.  Real WM_INPUT
- *     messages bypass LL hooks, so this layer catches them.
- *
- *   Layer 4 — SendInput injection
- *     Keyboards and mouse button deltas are injected via SendInput so that
- *     message-pump based games (PeekMessage / GetMessage → DispatchMessage)
- *     receive the correct WM_KEYDOWN, WM_MOUSEMOVE, etc. events.  Mouse
- *     movement uses MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE so the resulting
- *     events are flagged as injected and pass through the LL hooks.
- *
- * Together these four layers cover:
- *   - PeekMessage / GetMessage / DispatchMessage  (message-pump games)
- *   - GetAsyncKeyState                            (polling games)
- *   - GetKeyState / GetKeyboardState               (synchronised-state games)
- *   - GetCursorPos                                 (cursor polling)
- *   - Raw Input (WM_INPUT / GetRawInputData)       (stripped; no real data)
- */
+MIT License
+
+Copyright (c) 2026 Christian Luppi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
 
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <psapi.h>   /* EnumProcessModules */
+#include <psapi.h> /* EnumProcessModules */
 #include <xinput.h>
 #include <signal.h>
 #include <stdlib.h>
@@ -70,8 +52,8 @@ static CRITICAL_SECTION g_mutex;
 
 // ===== High-Resolution Timer =====
 
-static double g_perf_freq_inv = 0.0;     // 1.0 / QueryPerformanceFrequency
-static LARGE_INTEGER g_perf_origin;      // QPC value at GMT_Platform_Init; used as epoch
+static double g_perf_freq_inv = 0.0;  // 1.0 / QueryPerformanceFrequency
+static LARGE_INTEGER g_perf_origin;   // QPC value at GMT_Platform_Init; used as epoch
 
 // ===== Crash / abort safety net globals =====
 // Declared here so RemoveInputHooks (below) can reference them before the
@@ -1786,4 +1768,3 @@ void GMT_Platform_MutexUnlock(void) {
 }
 
 // ===== Threading =====
-

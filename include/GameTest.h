@@ -29,6 +29,20 @@ SOFTWARE.
 #include <stdbool.h>
 #include <string.h>
 
+// ===== Usage Notes =====
+//
+// Platform: Win32 only. No other platforms are supported at this time.
+//
+// Functions whose names end with _ (e.g. GMT_Update_) are internal entry points.
+// Always call the corresponding macro instead (e.g. GMT_Update()). The macros
+// attach source location, respect GMT_DISABLE, and are the stable public API.
+//
+// Input recording and replay involve many platform-level edge cases (focus loss,
+// UAC prompts, OS-level input grabs, alt-tab, etc.) and may produce unexpected
+// results. Any external event that steals input focus from the application during
+// a recording or replay can cause the captured state to diverge from what the
+// game actually received. Use at your own risk.
+
 // ===== API Export =====
 
 #if defined(GMT_SHARED)
@@ -71,9 +85,9 @@ static inline GMT_CodeLocation GMT_MakeLocation_(const char* file, int line, con
 // ===== Logging =====
 
 typedef enum GMT_Severity {
-  GMT_Severity_INFO,
-  GMT_Severity_WARNING,
-  GMT_Severity_ERROR,
+  GMT_Severity_INFO,     // Diagnostic messages; default output: stdout.
+  GMT_Severity_WARNING,  // Recoverable anomalies (e.g. deferred input, ignored signals); default output: stderr.
+  GMT_Severity_ERROR,    // Unrecoverable problems (e.g. file I/O failure, payload too large); default output: stderr.
 } GMT_Severity;
 
 // Log callback. Defaults to stdout/stderr; override to integrate with your own logging.
@@ -96,7 +110,8 @@ GMT_API void GMT_Log_(GMT_Severity severity, GMT_CodeLocation loc, const char* f
 
 // ===== Memory Management =====
 
-// Override these to integrate with your own allocator.
+// Override these to integrate with your own allocator. NULL uses malloc/free/realloc.
+// loc carries the call-site (file, line, function) for allocator diagnostics.
 typedef void* (*GMT_AllocCallback)(size_t size, GMT_CodeLocation loc);
 typedef void (*GMT_FreeCallback)(void* ptr, GMT_CodeLocation loc);
 typedef void* (*GMT_ReallocCallback)(void* ptr, size_t new_size, GMT_CodeLocation loc);
@@ -118,20 +133,21 @@ GMT_API void* GMT_Realloc_(void* ptr, size_t new_size, GMT_CodeLocation loc);  /
 // ===== Assertion Data =====
 
 typedef struct GMT_Assertion {
-  const char* condition_str;
-  const char* msg;
+  const char* condition_str;  // Stringified source expression passed to the assert macro.
+  const char* msg;            // Human-readable failure message (auto-generated or user-supplied).
   GMT_CodeLocation loc;
 } GMT_Assertion;
 
-// Called when an assertion fails.
+// Called on every assertion failure, before the fail-trigger count is checked.
+// Does not itself fail the test; use GMT_Fail() inside the callback if needed.
 typedef void (*GMT_AssertionTriggerCallback)(GMT_Assertion assertion);
 
 // ===== Setup =====
 
 typedef enum GMT_Mode {
-  GMT_Mode_DISABLED = 0,
-  GMT_Mode_RECORD,
-  GMT_Mode_REPLAY,
+  GMT_Mode_DISABLED = 0,  // No recording or replay; all GMT_ calls are no-ops.
+  GMT_Mode_RECORD,        // Captures input and data to the test file each frame.
+  GMT_Mode_REPLAY,        // Loads the test file and injects captured input each frame.
 } GMT_Mode;
 
 // Maps a path to a redirected path so the framework can read/write test files without affecting game files.
@@ -140,24 +156,26 @@ typedef struct GMT_DirectoryMapping {
   const char* redirected_path;
 } GMT_DirectoryMapping;
 
-// Called on signal sync. Used to synchronize recording/replay with game events across runs.
+// Fired on every GMT_SyncSignal() call in all modes. Useful for logging or driving
+// external tooling that needs to know when the game reaches a sync point.
 typedef void (*GMT_SignalCallback)(GMT_Mode mode, int id, GMT_CodeLocation loc);
 
+// Called when the test fails. Default: prints the assertion report and calls exit(1).
 typedef void (*GMT_FailCallback)();
 
 typedef struct GMT_Setup {
   GMT_Mode mode;
   const char* test_path;  // Path to the test file to record or replay.
-  GMT_LogCallback log_callback;
-  GMT_AllocCallback alloc_callback;
-  GMT_FreeCallback free_callback;
-  GMT_ReallocCallback realloc_callback;
+  GMT_LogCallback log_callback;          // NULL uses the default (stdout/stderr).
+  GMT_AllocCallback alloc_callback;      // NULL uses malloc.
+  GMT_FreeCallback free_callback;        // NULL uses free.
+  GMT_ReallocCallback realloc_callback;  // NULL uses realloc.
   const char* work_dir;  // Optional working directory for the executable.
-  GMT_DirectoryMapping* directory_mappings;
+  GMT_DirectoryMapping* directory_mappings;  // May be NULL if directory_mapping_count is 0.
   size_t directory_mapping_count;
-  GMT_SignalCallback* signal_callback;
-  GMT_FailCallback* fail_callback;  // Default: print + exit.
-  GMT_AssertionTriggerCallback* assertion_trigger_callback;
+  GMT_SignalCallback* signal_callback;                    // NULL disables the user callback.
+  GMT_FailCallback* fail_callback;                        // NULL uses the default (print + exit).
+  GMT_AssertionTriggerCallback* assertion_trigger_callback;  // NULL disables the user callback.
   // Fail the test after this many assertion failures to prevent infinite loops.
   // If <= 1, the test fails on the first failed assertion.
   int fail_assertion_trigger_count;
@@ -180,12 +198,15 @@ GMT_API void GMT_Quit_(void);
 // ===== Runtime =====
 
 // Call once per frame, before polling input or processing game logic.
+// Advances the frame counter, captures input (RECORD) or injects it (REPLAY),
+// and resets the per-frame sequential indices used by Pin and Track.
 GMT_API void GMT_Update_(void);
 
 // Discards the current recording/replay and starts fresh from the next frame.
+// Also clears the failed-assertion list and resets Pin/Track sequential counters.
 GMT_API void GMT_Reset_(void);
 
-// Immediately fails the current test.
+// Immediately fails the current test and invokes the fail callback.
 GMT_API void GMT_Fail_(void);
 
 #ifndef GMT_DISABLE
@@ -473,3 +494,116 @@ GMT_API void GMT_TrackBytes_(unsigned int key, const void* data, size_t size, GM
 // Your game should have a "HEADLESS" mode that runs the game loop and processes input but doesn't render anything or open windows. This allows tests to run much faster and more reliably, and makes it easier to run tests in CI.
 // You can still use the framework in non-headless mode for debugging or testing things that require rendering, but headless mode is ideal for automated testing.
 // Also ensure tests dont write to the same files.
+
+// ===== Input Consistency Guide =====
+//
+// This section describes how to structure your game loop so that input is
+// recorded and replayed correctly, and documents the known limits and edge
+// cases where input records may be deferred, dropped, or mismatched.
+//
+//
+// ----- Required frame structure -----
+//
+// GMT_Update() MUST be called exactly once per frame, at the very top of the
+// game loop, before your code reads any input:
+//
+//   while (running) {
+//       GMT_Update();          // 1. advance the framework (captures / injects input)
+//       PollInput();           // 2. read input — framework state is now current
+//       UpdateGame(dt);        // 3. game logic
+//       Render();              // 4. draw
+//   }
+//
+// Calling GMT_Update() after your input poll means the framework state lags
+// one frame behind, producing an off-by-one timing mismatch between recording
+// and replay that grows over long tests.
+//
+//
+// ----- What is captured -----
+//
+// Each GMT_Update() snapshots the full input state into one record:
+//   - Keyboard  : pressed state + auto-repeat count for every key in GMT_Key.
+//   - Mouse     : absolute screen position (pixels), wheel delta accumulated
+//                 since the last frame (positive = right/up), button bitmask.
+//   - Gamepads  : up to GMT_MAX_GAMEPADS (4) controllers, each with a buttons
+//                 bitmask, analog triggers [0,255], and thumbstick axes
+//                 [-32768, 32767].
+//
+// Records are written with a wall-clock timestamp (seconds since the start of
+// the recording) and are delta-compressed: if the input state is identical to
+// the previous frame, no record is written. This means held keys do not inflate
+// the file — only transitions (press, release, position change, etc.) appear.
+//
+// Fast key taps that start and end between two GMT_Update() calls are caught
+// by the platform layer, which writes an extra input record on each key
+// transition, so they are not lost even at low frame rates.
+//
+//
+// ----- Known limits -----
+//
+//   Injection batch cap (GMT__MAX_INJECT_BATCH = 64)
+//     At most 64 input-state transitions are injected per GMT_Update() call.
+//     Under normal usage this limit is never reached. It can be approached only
+//     when many distinct state changes are due simultaneously — for example, if
+//     GMT_Update() is called very infrequently while many recorded events pile
+//     up. When the cap is hit, excess records are deferred to the next frame
+//     and a warning is logged:
+//       "batch limit (64) reached; input records deferred to next frame"
+//     Remedy: call GMT_Update() every frame without skipping.
+//
+//   Pin / Track payload cap (GMT_MAX_DATA_RECORD_PAYLOAD = 256 bytes)
+//     A single GMT_PinBytes / GMT_TrackBytes call may not exceed 256 bytes.
+//     Calls that exceed this limit are silently skipped and an error is logged.
+//     Remedy: split large structures into smaller pinned fields, or store a
+//     hash / checksum and pin that instead.
+//
+//   Gamepad slot cap (GMT_MAX_GAMEPADS = 4)
+//     Only the first 4 gamepad slots are captured. A 5th controller is never
+//     recorded.
+//
+//   Mouse extra buttons (GMT_MouseButton_5/6/7)
+//     Buttons 5, 6, and 7 are reserved in the format for future platforms but
+//     may not be captured on all platforms. Do not rely on them in assertions.
+//
+//   Failed-assertion storage (GMT_MAX_FAILED_ASSERTIONS = 1024)
+//     Only the first 1024 failed assertions per run are retained in memory.
+//     Subsequent failures still trigger the fail callback and increment the
+//     counter, but their details are not stored for GMT_GetFailedAssertions.
+//
+//
+// ----- Cases where input may be missed or replayed incorrectly -----
+//
+//   1. GMT_Update() not called during a freeze or long stall
+//      If the game stalls (e.g., a blocking load) without calling GMT_Update(),
+//      recorded timestamps are relative to wall-clock time. On replay the
+//      framework waits for those timestamps to elapse before injecting, which
+//      reproduces the correct timing only if a GMT_SyncSignal() surrounds the
+//      variable-time event. Without a sync signal, inputs after the stall may
+//      inject too early or too late. Use GMT_SyncSignal() at every point where
+//      wall-clock duration varies between runs (loading screens, network waits,
+//      first-frame init).
+//
+//   2. Signal ID mismatch during replay
+//      GMT_SyncSignal() advances the internal signal cursor only when the
+//      emitted ID matches the next recorded ID in order. If the IDs differ
+//      (e.g., the game skips a code path that emits a signal, or signals are
+//      emitted in a different order), the call is ignored with a warning and
+//      the cursor does not advance. Subsequent signals will also be out of
+//      order, causing the replay to remain gated on the wrong signal and
+//      effectively stalling input injection. Signals MUST always fire in the
+//      same order and with the same IDs as during recording.
+//
+//   3. More GMT_SyncSignal() calls during replay than were recorded
+//      Once all recorded signals are consumed, any extra GMT_SyncSignal() call
+//      is ignored with a warning. This is safe as long as the extra signals
+//      occur after all input has been injected. If extra signals appear before
+//      injection is complete, input that depended on a later signal will be
+//      injected without gating, potentially arriving too early.
+//
+//   4. Non-deterministic values not pinned
+//      If your game reads wall-clock time, random numbers, or any other value
+//      that differs between runs, and that value influences game state (and
+//      therefore which inputs are valid), replay will diverge. Use GMT_PinXxx()
+//      to capture those values during recording and restore them during replay.
+//      Common candidates: random seeds, first-frame delta-time, physics step
+//      counters, network-derived state.

@@ -1,21 +1,26 @@
 /*
- * Signal.c - Sync signal implementation.
- *
- * In RECORD mode  : writes a TAG_SIGNAL record to the test file at the current timestamp.
- * In REPLAY mode  : advances the signal cursor and adjusts the replay clock whenever
- *                   the game emits the next expected signal.  Two cases:
- *                    - Normal/late: the injection gate was already set (waiting_for_signal),
- *                      meaning the replay engine reached the signal timestamp before the
- *                      game emitted it.  The offset is increased by the wait duration so
- *                      subsequent timestamps remain consistent.
- *                    - Early: the game fired the signal before the replay engine reached
- *                      its recorded timestamp (e.g. an "Init" signal before the main loop).
- *                      The offset is adjusted so that replay_time equals the signal's
- *                      recorded timestamp going forward, keeping input timing correct.
- * In DISABLED mode: no-op.
- *
- * The optional user signal callback (GMT_Setup::signal_callback) is invoked in all modes.
- */
+MIT License
+
+Copyright (c) 2026 Christian Luppi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
 
 #include "Internal.h"
 #include "Record.h"
@@ -55,9 +60,8 @@ void GMT_SyncSignal_(int id, GMT_CodeLocation loc) {
           // Normal (late) case: the injection gate was set because the replay engine
           // already reached the signal's timestamp, and the game is now catching up.
           // Offset by how long we waited so subsequent timestamps stay consistent.
-          g_gmt.replay_time_offset += (now - g_gmt.signal_wait_start);  // TODO: Shouldnt this be subtracted, and then we keep replaying as normal?
-          g_gmt.waiting_for_signal = false;
-        } else {  // TODO: Shouldnt here be just leaving the signal untouched, and keep replaying without waiting for signal?
+          g_gmt.replay_time_offset += (now - g_gmt.signal_wait_start);
+        } else {
           // Early case: game fired the signal before replay reached its recorded
           // timestamp (e.g. an "Init" signal before the main loop).  Align the
           // replay clock so that replay_time == st going forward, ensuring subsequent
