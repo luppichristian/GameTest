@@ -7,8 +7,10 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 # ---------------------------------------------------------------------------
 # Options
 # ---------------------------------------------------------------------------
+
 option(GMT_BUILD_SHARED   "Build as a shared library" OFF)
-option(GMT_BUILD_EXAMPLE "Build example"            ON)
+option(GMT_BUILD_EXAMPLE  "Build example"             ON)
+option(GMT_BUILD_TOOLS    "Build auxiliary tools"     ON)
 
 # ---------------------------------------------------------------------------
 # Library target
@@ -28,8 +30,6 @@ set(GMT_SOURCES
 
 if(WIN32)
     list(APPEND GMT_SOURCES src/PlatformWin32.c)
-else()
-    message(FATAL_ERROR "GameTest: platform not supported (only Win32 is implemented).")
 endif()
 
 if(GMT_BUILD_SHARED)
@@ -49,23 +49,29 @@ if(WIN32)
 endif()
 
 # ---------------------------------------------------------------------------
-# GLFW (via FetchContent)
-# ---------------------------------------------------------------------------
-include(FetchContent)
-set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
-set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
-FetchContent_Declare(
-    glfw
-    GIT_REPOSITORY https://github.com/glfw/glfw.git
-    GIT_TAG        3.4
-)
-FetchContent_MakeAvailable(glfw)
-
-# ---------------------------------------------------------------------------
 # Examples
 # ---------------------------------------------------------------------------
+
 if(GMT_BUILD_EXAMPLE)
+    include(FetchContent)
+    set(GLFW_BUILD_DOCS     OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_TESTS    OFF CACHE BOOL "" FORCE)
+    set(GLFW_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    FetchContent_Declare(
+        glfw
+        GIT_REPOSITORY https://github.com/glfw/glfw.git
+        GIT_TAG        3.4
+    )
+    FetchContent_MakeAvailable(glfw)
+
     add_executable(GameTest-Game "example/Game.c")
     target_link_libraries(GameTest-Game PRIVATE GameTest glfw opengl32)
+endif()
+
+# ---------------------------------------------------------------------------
+# Tools
+# ---------------------------------------------------------------------------
+
+if(GMT_BUILD_TOOLS AND WIN32)
+    add_executable(GameTest-Launch-Isolated tools/LaunchIsolatedWin32.c)
 endif()
