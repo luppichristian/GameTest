@@ -1,3 +1,27 @@
+/*
+MIT License
+
+Copyright (c) 2026 Christian Luppi
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 #include <wchar.h>
@@ -9,7 +33,7 @@
 #include "ToolPlatform.h"
 
 #ifndef DESKTOP_ALL_ACCESS
-#define DESKTOP_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED | 0x01FF)
+#  define DESKTOP_ALL_ACCESS (STANDARD_RIGHTS_REQUIRED | 0x01FF)
 #endif
 
 static void normalize_slashes(char* s) {
@@ -54,6 +78,52 @@ static WCHAR* a2w(const char* s) {
   return out;
 }
 
+static size_t quoted_arg_len_w(const WCHAR* s) {
+  size_t len = 2; /* surrounding quotes */
+  size_t backslashes = 0;
+  while (*s) {
+    if (*s == L'\\') {
+      backslashes++;
+    } else if (*s == L'"') {
+      len += backslashes * 2 + 2; /* escaped backslashes + escaped quote */
+      backslashes = 0;
+    } else {
+      len += backslashes + 1;
+      backslashes = 0;
+    }
+    ++s;
+  }
+  len += backslashes * 2; /* escape trailing backslashes before closing quote */
+  return len;
+}
+
+static WCHAR* append_quoted_arg_w(WCHAR* dst, const WCHAR* s) {
+  size_t backslashes = 0;
+  *dst++ = L'"';
+  while (*s) {
+    if (*s == L'\\') {
+      backslashes++;
+    } else if (*s == L'"') {
+      size_t i;
+      for (i = 0; i < backslashes * 2 + 1; ++i) *dst++ = L'\\';
+      *dst++ = L'"';
+      backslashes = 0;
+    } else {
+      size_t i;
+      for (i = 0; i < backslashes; ++i) *dst++ = L'\\';
+      *dst++ = *s;
+      backslashes = 0;
+    }
+    ++s;
+  }
+  {
+    size_t i;
+    for (i = 0; i < backslashes * 2; ++i) *dst++ = L'\\';
+  }
+  *dst++ = L'"';
+  return dst;
+}
+
 static WCHAR* build_cmdline_w(int argc, const char* const* argv) {
   size_t needed = 1;
   int i;
@@ -61,12 +131,10 @@ static WCHAR* build_cmdline_w(int argc, const char* const* argv) {
   WCHAR* out;
 
   for (i = 0; i < argc; ++i) {
-    const char* p = argv[i];
-    needed += 3;
-    while (*p) {
-      needed += (*p == '"') ? 2 : 1;
-      ++p;
-    }
+    WCHAR* wide = a2w(argv[i]);
+    if (!wide) return NULL;
+    needed += quoted_arg_len_w(wide) + (i > 0 ? 1 : 0);
+    free(wide);
   }
 
   out = (WCHAR*)malloc(needed * sizeof(WCHAR));
@@ -75,20 +143,14 @@ static WCHAR* build_cmdline_w(int argc, const char* const* argv) {
   dst = out;
   for (i = 0; i < argc; ++i) {
     WCHAR* wide;
-    const WCHAR* s;
     if (i > 0) *dst++ = L' ';
-    *dst++ = L'"';
     wide = a2w(argv[i]);
     if (!wide) {
       free(out);
       return NULL;
     }
-    for (s = wide; *s; ++s) {
-      if (*s == L'"') *dst++ = L'\\';
-      *dst++ = *s;
-    }
+    dst = append_quoted_arg_w(dst, wide);
     free(wide);
-    *dst++ = L'"';
   }
   *dst = L'\0';
   return out;
@@ -112,6 +174,18 @@ int gmt_platform_get_current_dir(char* out, size_t out_size) {
 int gmt_platform_file_exists(const char* path) {
   DWORD attrs = GetFileAttributesA(path);
   return attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY);
+}
+
+int gmt_platform_is_executable(const char* path) {
+  HANDLE h;
+  WORD magic = 0;
+  DWORD bytes_read = 0;
+  h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL,
+                  OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (h == INVALID_HANDLE_VALUE) return 0;
+  ReadFile(h, &magic, sizeof(magic), &bytes_read, NULL);
+  CloseHandle(h);
+  return bytes_read == sizeof(magic) && magic == 0x5A4D; /* 'MZ' */
 }
 
 int gmt_platform_directory_exists(const char* path) {
@@ -152,7 +226,7 @@ int gmt_platform_ensure_parent_dirs(const char* file_path) {
 static int ends_with_gmt_ci(const char* filename) {
   size_t len = strlen(filename);
   if (len < 4) return 0;
-  return ((filename[len - 4] == '.' || filename[len - 4] == '.') &&
+  return (filename[len - 4] == '.' &&
           (filename[len - 3] == 'g' || filename[len - 3] == 'G') &&
           (filename[len - 2] == 'm' || filename[len - 2] == 'M') &&
           (filename[len - 1] == 't' || filename[len - 1] == 'T'));
@@ -188,11 +262,11 @@ int gmt_platform_discover_gmt_recursive(const char* dir, void* ctx, GmtAppendPat
   return count;
 }
 
-int gmt_platform_spawn_process(const char* const* args, int arg_count, int isolated,
-                               GmtProcessHandle* out_process) {
+int gmt_platform_spawn_process(const char* const* args, int arg_count, int isolated, GmtProcessHandle* out_process) {
   STARTUPINFOW si;
   PROCESS_INFORMATION pi;
   WCHAR* cmdline = NULL;
+  WCHAR* wide_exe = NULL;
   BOOL ok;
 
   memset(&si, 0, sizeof(si));
@@ -200,19 +274,27 @@ int gmt_platform_spawn_process(const char* const* args, int arg_count, int isola
   memset(out_process, 0, sizeof(*out_process));
   si.cb = sizeof(si);
 
+  wide_exe = a2w(args[0]);
+  if (!wide_exe) {
+    fprintf(stderr, "GameTest-Tool: out of memory converting executable path\n");
+    return 0;
+  }
+
   cmdline = build_cmdline_w(arg_count, args);
   if (!cmdline) {
     fprintf(stderr, "GameTest-Tool: out of memory building command line\n");
+    free(wide_exe);
     return 0;
   }
 
   if (!isolated) {
-    ok = CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
-    free(cmdline);
+    ok = CreateProcessW(wide_exe, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
     if (!ok) {
-      fprintf(stderr, "GameTest-Tool: CreateProcess failed (%lu)\n", GetLastError());
-      return 0;
+      fprintf(stderr, "GameTest-Tool: CreateProcess failed (%lu): %s\n", GetLastError(), args[0]);
     }
+    free(cmdline);
+    free(wide_exe);
+    if (!ok) return 0;
   } else {
     HWINSTA original_station = GetProcessWindowStation();
     HWINSTA station = CreateWindowStationW(NULL, 0, WINSTA_ALL_ACCESS, NULL);
@@ -224,6 +306,7 @@ int gmt_platform_spawn_process(const char* const* args, int arg_count, int isola
     if (!station) {
       fprintf(stderr, "GameTest-Tool: CreateWindowStation failed (%lu)\n", GetLastError());
       free(cmdline);
+      free(wide_exe);
       return 0;
     }
 
@@ -231,6 +314,7 @@ int gmt_platform_spawn_process(const char* const* args, int arg_count, int isola
       fprintf(stderr, "GameTest-Tool: SetProcessWindowStation failed (%lu)\n", GetLastError());
       CloseWindowStation(station);
       free(cmdline);
+      free(wide_exe);
       return 0;
     }
 
@@ -241,6 +325,7 @@ int gmt_platform_spawn_process(const char* const* args, int arg_count, int isola
       fprintf(stderr, "GameTest-Tool: CreateDesktop failed (%lu)\n", desk_err);
       CloseWindowStation(station);
       free(cmdline);
+      free(wide_exe);
       return 0;
     }
 
@@ -249,16 +334,20 @@ int gmt_platform_spawn_process(const char* const* args, int arg_count, int isola
       CloseDesktop(desktop);
       CloseWindowStation(station);
       free(cmdline);
+      free(wide_exe);
       return 0;
     }
 
     swprintf(desktop_arg, 512, L"%s\\Default", station_name);
     si.lpDesktop = desktop_arg;
 
-    ok = CreateProcessW(NULL, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
-    free(cmdline);
+    ok = CreateProcessW(wide_exe, cmdline, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi);
     if (!ok) {
-      fprintf(stderr, "GameTest-Tool: CreateProcess (isolated) failed (%lu)\n", GetLastError());
+      fprintf(stderr, "GameTest-Tool: CreateProcess (isolated) failed (%lu): %s\n", GetLastError(), args[0]);
+    }
+    free(cmdline);
+    free(wide_exe);
+    if (!ok) {
       CloseDesktop(desktop);
       CloseWindowStation(station);
       return 0;
@@ -311,4 +400,6 @@ void gmt_platform_close_process(GmtProcessHandle* process) {
   memset(process, 0, sizeof(*process));
 }
 
-void gmt_platform_sleep_ms(unsigned int milliseconds) { Sleep(milliseconds); }
+void gmt_platform_sleep_ms(unsigned int milliseconds) {
+  Sleep(milliseconds);
+}

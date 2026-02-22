@@ -1,2 +1,2 @@
 @echo off
-build\GameTest-Tool.exe record example\tests\playing.gmt build\GameTest-Game.exe
+build\GameTest-Tool.exe record build\GameTest-Game.exe example\tests\playing.gmt
