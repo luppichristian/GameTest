@@ -71,6 +71,8 @@ typedef struct GMT_FileMetrics {
   long file_size_bytes;  // File size in bytes (RECORD: incl. pending TAG_END; REPLAY: 0)
   size_t input_count;    // Number of input records (RECORD: estimated from file size)
   size_t signal_count;   // Number of signal records (RECORD: not tracked, always 0)
+  size_t pin_count;      // Number of pin records
+  size_t track_count;    // Number of track records
   double duration;       // Recording length in seconds
   double input_density;  // Input records per second
   uint64_t frame_count;  // Frames processed (RECORD only; 0 for REPLAY)
@@ -177,6 +179,10 @@ typedef struct GMT_State {
   size_t record_input_count;
   // Exact count of signal records written during this recording session.
   size_t record_signal_count;
+  // Exact count of pin records written during this recording session.
+  size_t record_pin_count;
+  // Exact count of track records written during this recording session.
+  size_t record_track_count;
 
   // ----- REPLAY mode -----
   GMT_DecodedInput* replay_inputs;

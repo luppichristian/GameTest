@@ -62,6 +62,8 @@ bool GMT_Record_OpenForWrite(void) {
   g_gmt.record_file = fh;
   g_gmt.record_input_count = 0;
   g_gmt.record_signal_count = 0;
+  g_gmt.record_pin_count = 0;
+  g_gmt.record_track_count = 0;
   return true;
 }
 
@@ -119,6 +121,9 @@ void GMT_Record_WriteDataRecord(uint8_t tag, unsigned int key, unsigned int inde
   fwrite(&tag, 1, 1, g_gmt.record_file);
   fwrite(&hdr, sizeof(hdr), 1, g_gmt.record_file);
   fwrite(data, 1, size, g_gmt.record_file);
+
+  if (tag == GMT_RECORD_TAG_PIN) g_gmt.record_pin_count++;
+  else if (tag == GMT_RECORD_TAG_TRACK) g_gmt.record_track_count++;
 }
 
 GMT_DecodedDataRecord* GMT_Record_FindDecoded(GMT_DecodedDataRecord* arr, size_t count, unsigned int key, unsigned int index) {
@@ -348,6 +353,8 @@ GMT_FileMetrics GMT_Record_GetReplayMetrics(void) {
   memset(&m, 0, sizeof(m));
   m.input_count = g_gmt.replay_input_count;
   m.signal_count = g_gmt.replay_signal_count;
+  m.pin_count = g_gmt.replay_pin_count;
+  m.track_count = g_gmt.replay_track_count;
   m.duration = (g_gmt.replay_input_count > 0)
                    ? g_gmt.replay_inputs[g_gmt.replay_input_count - 1].timestamp
                    : 0.0;
@@ -365,57 +372,10 @@ GMT_FileMetrics GMT_Record_GetRecordMetrics(void) {
   m.frame_count = g_gmt.frame_index;
   m.input_count = g_gmt.record_input_count;
   m.signal_count = g_gmt.record_signal_count;
+  m.pin_count = g_gmt.record_pin_count;
+  m.track_count = g_gmt.record_track_count;
   m.input_density = (m.duration > 0.0) ? (double)m.input_count / m.duration : 0.0;
   return m;
-}
-
-void GMT_Record_InjectInput(void) {
-  // If we're waiting for a sync signal, do not inject yet.
-  if (g_gmt.waiting_for_signal) return;
-
-  double now = GMT_Platform_GetTime();
-  double replay_time = (now - g_gmt.record_start_time) - g_gmt.replay_time_offset;
-
-  // Process input records and signals in chronological order.
-  // Every input record whose timestamp has been reached is injected individually
-  // so that intermediate key press/release pairs generate proper WM_KEYDOWN /
-  // WM_KEYUP messages for message-pump–based games.  A signal whose timestamp
-  // has been reached gates further injection until the game emits it.
-
-  while (1) {
-    bool have_input = g_gmt.replay_input_cursor < g_gmt.replay_input_count;
-    bool have_signal = g_gmt.replay_signal_cursor < g_gmt.replay_signal_count;
-
-    if (!have_input && !have_signal) break;
-
-    double it = have_input ? g_gmt.replay_inputs[g_gmt.replay_input_cursor].timestamp : 1e18;
-    double st = have_signal ? g_gmt.replay_signals[g_gmt.replay_signal_cursor].timestamp : 1e18;
-
-    // Signal wins ties — it must gate before a same-timestamp input record is replayed.
-    bool signal_first = have_signal && st <= it;
-
-    if (signal_first) {
-      if (st > replay_time) break;  // Signal is in the future; nothing to do yet.
-
-      g_gmt.waiting_for_signal = true;
-      g_gmt.waiting_signal_id = g_gmt.replay_signals[g_gmt.replay_signal_cursor].signal_id;
-      g_gmt.signal_wait_start = now;
-      return;
-    }
-
-    // Input record comes first.
-    if (it > replay_time) break;  // Input record is in the future; stop.
-
-    // Inject this input record.  Every record is injected individually so that
-    // key transitions generate the correct Win32 messages (WM_KEYDOWN, WM_KEYUP,
-    // WM_MOUSEMOVE, etc.) even when multiple records elapse in a single frame.
-    GMT_DecodedInput* di = &g_gmt.replay_inputs[g_gmt.replay_input_cursor];
-    GMT_Platform_SetReplayedInput(&di->input);
-    GMT_Platform_InjectInput(&di->input, &g_gmt.replay_prev_input);
-    g_gmt.replay_prev_input = di->input;
-    g_gmt.replay_current_input = di->input;
-    g_gmt.replay_input_cursor++;
-  }
 }
 
 // ===== Background replay injection thread =====
@@ -425,20 +385,103 @@ void GMT_Record_InjectInput(void) {
 // drift between the recording and replay clocks.  This thread calls the same
 // function every 1 ms so that injection is decoupled from frame timing entirely.
 //
-// Thread safety: GMT_Record_InjectInput already reads/writes g_gmt under the
-// framework mutex.  The thread acquires the mutex on every iteration, holds it
-// for microseconds, then releases it and sleeps 1 ms.  Contention with the main
-// thread is negligible.
+// Thread safety: g_gmt state is read/written under the framework mutex.  The
+// thread acquires the mutex only to collect the next batch of pending input
+// records (updating cursors and prev/current state), then releases it BEFORE
+// calling SendInput.  This is critical: SendInput triggers the Windows raw-input
+// pipeline which needs to dispatch WH_KEYBOARD_LL / WH_MOUSE_LL callbacks to the
+// main thread.  If the mutex were held during SendInput and the main thread were
+// blocked on EnterCriticalSection waiting for that same mutex, neither thread
+// could make progress — the main thread can't pump messages (needed for LL hook
+// delivery) and the replay thread won't release the lock until SendInput returns.
+// Windows eventually times out the hook (~200 ms default), causing visible lag.
+//
+// Keeping the mutex held only for the fast collect phase eliminates this stall.
 //
 // The thread must be stopped (GMT_Record_StopReplayThread) before any of the
 // replay data it accesses is freed (GMT_Record_FreeReplay).
 
+// Maximum number of input records collected per 1-ms iteration.
+// In normal use at most one record elapses per ms; 8 is a generous catch-up cap.
+#define GMT__MAX_INJECT_BATCH 8
+
+// Collects all pending input records whose timestamps have elapsed into
+// out_new[]/out_prev[] pairs (up to GMT__MAX_INJECT_BATCH entries).
+// Advances g_gmt cursors and prev/current state, but does NOT call SendInput.
+// Must be called with the mutex held.  Returns the number of pairs collected.
+static int GMT__CollectPendingInjections(GMT_InputState* out_new, GMT_InputState* out_prev) {
+  if (g_gmt.waiting_for_signal) return 0;
+
+  double now = GMT_Platform_GetTime();
+  double replay_time = (now - g_gmt.record_start_time) - g_gmt.replay_time_offset;
+  int count = 0;
+
+  while (count < GMT__MAX_INJECT_BATCH) {
+    bool have_input = g_gmt.replay_input_cursor < g_gmt.replay_input_count;
+    bool have_signal = g_gmt.replay_signal_cursor < g_gmt.replay_signal_count;
+
+    if (!have_input && !have_signal) break;
+
+    double it = have_input ? g_gmt.replay_inputs[g_gmt.replay_input_cursor].timestamp : 1e18;
+    double st = have_signal ? g_gmt.replay_signals[g_gmt.replay_signal_cursor].timestamp : 1e18;
+
+    // Signal wins ties — it must gate before a same-timestamp input record.
+    bool signal_first = have_signal && st <= it;
+
+    if (signal_first) {
+      if (st > replay_time) break;
+      g_gmt.waiting_for_signal = true;
+      g_gmt.waiting_signal_id = g_gmt.replay_signals[g_gmt.replay_signal_cursor].signal_id;
+      g_gmt.signal_wait_start = now;
+      break;
+    }
+
+    if (it > replay_time) break;
+
+    GMT_DecodedInput* di = &g_gmt.replay_inputs[g_gmt.replay_input_cursor];
+    out_prev[count] = (count == 0) ? g_gmt.replay_prev_input : out_new[count - 1];
+    out_new[count] = di->input;
+    g_gmt.replay_prev_input = di->input;
+    g_gmt.replay_current_input = di->input;
+    g_gmt.replay_input_cursor++;
+    count++;
+  }
+
+  return count;
+}
+
+void GMT_Record_InjectInput(void) {
+  // Used by the per-frame fallback path in GMT_Update_ (called with mutex held
+  // on the main thread).  On the main thread SendInput is safe to call under the
+  // mutex because the main thread IS the LL hook owner; the hook will fire on the
+  // next PeekMessage call (glfwPollEvents) after the mutex is released.
+  GMT_InputState new_states[GMT__MAX_INJECT_BATCH];
+  GMT_InputState prev_states[GMT__MAX_INJECT_BATCH];
+  int count = GMT__CollectPendingInjections(new_states, prev_states);
+  for (int i = 0; i < count; i++) {
+    GMT_Platform_SetReplayedInput(&new_states[i]);
+    GMT_Platform_InjectInput(&new_states[i], &prev_states[i]);
+  }
+}
+
 static int GMT__ReplayThreadFunc(void* arg) {
   (void)arg;
+  GMT_InputState new_states[GMT__MAX_INJECT_BATCH];
+  GMT_InputState prev_states[GMT__MAX_INJECT_BATCH];
+
   while (g_gmt.replay_thread_active) {
+    // Collect under the mutex — fast: only pointer reads and state updates.
     GMT_Platform_MutexLock();
-    GMT_Record_InjectInput();
+    int count = GMT__CollectPendingInjections(new_states, prev_states);
     GMT_Platform_MutexUnlock();
+
+    // Inject OUTSIDE the mutex so SendInput never holds the lock while Windows
+    // dispatches LL hook callbacks to the main thread.
+    for (int i = 0; i < count; i++) {
+      GMT_Platform_SetReplayedInput(&new_states[i]);
+      GMT_Platform_InjectInput(&new_states[i], &prev_states[i]);
+    }
+
     GMT_Platform_SleepMs(1);
   }
   return 0;
