@@ -1,8 +1,27 @@
-# GameTest
+![GameTest](res/full_logo.png)
 
 GameTest is a record/replay testing framework for games written in C. It captures keyboard, mouse, and gamepad input during a recording session and injects that input back deterministically during replay, allowing automated regression testing of game logic without mocking or restructuring the game loop.
 
 **Platform:** Win32 only. C11 required.
+
+## Example
+
+See [EXAMPLE.md](EXAMPLE.md) for a walkthrough of the bundled Snake game, which demonstrates initialization, seed pinning, sync signals, inline assertions, and score verification.
+
+<video src="res/RECORD_REPLAY.mov" controls width="100%"></video>
+
+## How it works
+
+See [HOW_IT_WORKS.md](HOW_IT_WORKS.md) for a description of the record/replay lifecycle, input capture, Pin, Track, and SyncSignal.
+
+## Tool reference
+
+See [TOOL.md](TOOL.md) for the `GameTest-Tool` CLI used to record and replay tests.
+
+## Implementation limits and edge cases
+
+See [DETAILS.md](DETAILS.md) for hard limits, known edge cases, and the complete API reference.
+
 
 ---
 
@@ -68,22 +87,6 @@ The framework accepts `--test=<path>` and `--test-mode=record|replay|disabled`. 
 Define `GMT_DISABLE` before including the header to turn every macro into a no-op. No object code is generated and no runtime overhead is incurred.
 
 ---
-
-## How it works
-
-See [HOW_IT_WORKS.md](HOW_IT_WORKS.md) for a description of the record/replay lifecycle, input capture, Pin, Track, and SyncSignal.
-
-## Example
-
-See [EXAMPLE.md](EXAMPLE.md) for a walkthrough of the bundled Snake game, which demonstrates initialization, seed pinning, sync signals, inline assertions, and score verification.
-
-## Tool reference
-
-See [TOOL.md](TOOL.md) for the `GameTest-Tool` CLI used to record and replay tests.
-
-## Implementation limits and edge cases
-
-See [DETAILS.md](DETAILS.md) for hard limits, known edge cases, and the complete API reference.
 
 ---
 
