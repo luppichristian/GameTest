@@ -42,6 +42,7 @@ void GMT_SyncSignal_(int id, GMT_CodeLocation loc) {
         GMT_LogWarning("GMT_SyncSignal: signal id %d has no corresponding recorded entry (all %zu recorded signals already consumed); ignored.",
                        id,
                        g_gmt.replay_signal_count);
+
       } else if (g_gmt.replay_signals[g_gmt.replay_signal_cursor].signal_id != id) {
         GMT_LogWarning("GMT_SyncSignal: signal id %d does not match next expected id %d at cursor %zu; ignored.",
                        id,
@@ -54,9 +55,9 @@ void GMT_SyncSignal_(int id, GMT_CodeLocation loc) {
           // Normal (late) case: the injection gate was set because the replay engine
           // already reached the signal's timestamp, and the game is now catching up.
           // Offset by how long we waited so subsequent timestamps stay consistent.
-          g_gmt.replay_time_offset += (now - g_gmt.signal_wait_start);
+          g_gmt.replay_time_offset += (now - g_gmt.signal_wait_start);  // TODO: Shouldnt this be subtracted, and then we keep replaying as normal?
           g_gmt.waiting_for_signal = false;
-        } else {
+        } else {  // TODO: Shouldnt here be just leaving the signal untouched, and keep replaying without waiting for signal?
           // Early case: game fired the signal before replay reached its recorded
           // timestamp (e.g. an "Init" signal before the main loop).  Align the
           // replay clock so that replay_time == st going forward, ensuring subsequent
@@ -64,12 +65,9 @@ void GMT_SyncSignal_(int id, GMT_CodeLocation loc) {
           double replay_time_now = (now - g_gmt.record_start_time) - g_gmt.replay_time_offset;
           g_gmt.replay_time_offset += (replay_time_now - st);
         }
+
         g_gmt.replay_signal_cursor++;
       }
-      break;
-
-    case GMT_Mode_DISABLED:
-    default:
       break;
   }
 

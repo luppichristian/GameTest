@@ -22,6 +22,11 @@ void GMT_Record_CloseWrite(void);
 // Called once per GMT_Update in RECORD mode.
 void GMT_Record_WriteInput(void);
 
+// Same as GMT_Record_WriteInput but can be called from platform hooks (e.g. keyboard
+// LL hook) to capture key events with sub-frame accuracy. Handles its own mutex.
+// Call when a real (non-injected) key down/up is observed to avoid missing fast taps.
+void GMT_Record_WriteInputFromKeyEvent(void);
+
 // Appends a TAG_SIGNAL record for the given signal id at the current timestamp.
 // Called from GMT_SyncSignal_ in RECORD mode.
 void GMT_Record_WriteSignal(int32_t signal_id);
@@ -56,10 +61,3 @@ GMT_FileMetrics GMT_Record_GetReplayMetrics(void);
 // Estimates input_count from the file size.  Call before GMT_Record_CloseWrite.
 GMT_FileMetrics GMT_Record_GetRecordMetrics(void);
 
-// Starts / stops the background replay injection thread.
-// The thread calls GMT_Record_InjectInput every ~1 ms so that injection timing
-// is decoupled from frame boundaries, preventing one-frame timing jitter.
-// Start must be called after GMT_Record_LoadReplay.
-// Stop must be called (and waited on) before GMT_Record_FreeReplay.
-void GMT_Record_StartReplayThread(void);
-void GMT_Record_StopReplayThread(void);

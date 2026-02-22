@@ -24,6 +24,7 @@ Makefile
 *.user
 *.suo
 .idea/
+.cache/
 
 # OS files
 .DS_Store
