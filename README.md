@@ -17,7 +17,7 @@
 
 GameTest captures keyboard, mouse, and gamepad input during a recording session and injects that input back deterministically during replay, allowing automated regression testing of game logic without mocking or restructuring the game loop.
 
-<video src="res/RECORD_REPLAY.mp4" controls width="100%"></video>
+![Replay](res/RECORD_REPLAY.gif)
 
 ---
 
