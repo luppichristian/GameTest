@@ -1,27 +1,34 @@
-![GameTest](res/full_logo.png)
+<p align="center">
+  <img src="res/full_logo.png" width="480" alt="GameTest" />
+</p>
 
-GameTest is a record/replay testing framework for games written in C. It captures keyboard, mouse, and gamepad input during a recording session and injects that input back deterministically during replay, allowing automated regression testing of game logic without mocking or restructuring the game loop.
+<p align="center">
+  A record/replay testing framework for games written in C.
+</p>
 
-**Platform:** Win32 only. C11 required.
+<p align="center">
+  <img src="https://img.shields.io/badge/platform-Win32-blue" alt="Platform: Win32" />
+  <img src="https://img.shields.io/badge/language-C11-blue" alt="Language: C11" />
+  <img src="https://img.shields.io/badge/license-MIT-green" alt="License: MIT" />
+  <img src="https://img.shields.io/badge/build-CMake_3.19+-orange" alt="Build: CMake 3.19+" />
+</p>
 
-## Example
+---
 
-See [EXAMPLE.md](EXAMPLE.md) for a walkthrough of the bundled Snake game, which demonstrates initialization, seed pinning, sync signals, inline assertions, and score verification.
+GameTest captures keyboard, mouse, and gamepad input during a recording session and injects that input back deterministically during replay, allowing automated regression testing of game logic without mocking or restructuring the game loop.
 
-<video src="res/RECORD_REPLAY.mov" controls width="100%"></video>
+<video src="res/RECORD_REPLAY.mp4" controls width="100%"></video>
 
-## How it works
+---
 
-See [HOW_IT_WORKS.md](HOW_IT_WORKS.md) for a description of the record/replay lifecycle, input capture, Pin, Track, and SyncSignal.
+## Documentation
 
-## Tool reference
-
-See [TOOL.md](TOOL.md) for the `GameTest-Tool` CLI used to record and replay tests.
-
-## Implementation limits and edge cases
-
-See [DETAILS.md](DETAILS.md) for hard limits, known edge cases, and the complete API reference.
-
+| Document | Description |
+|---|---|
+| [EXAMPLE.md](EXAMPLE.md) | Walkthrough of the bundled Snake game — initialization, seed pinning, sync signals, inline assertions, and score verification. |
+| [HOW_IT_WORKS.md](HOW_IT_WORKS.md) | Record/replay lifecycle, input capture, Pin, Track, and SyncSignal. |
+| [TOOL.md](TOOL.md) | `GameTest-Tool` CLI reference. |
+| [DETAILS.md](DETAILS.md) | Hard limits, known edge cases, and the complete API reference. |
 
 ---
 
@@ -38,9 +45,9 @@ cmake --build build
 
 | Option | Default | Description |
 |---|---|---|
-| `GMT_BUILD_SHARED` | OFF | Build GameTest as a shared library instead of static. |
-| `GMT_BUILD_EXAMPLE` | ON | Build the bundled example game (requires internet access; fetches GLFW 3.4). |
-| `GMT_BUILD_TOOL` | ON | Build `GameTest-Tool`, the CLI runner. |
+| `GMT_BUILD_SHARED` | `OFF` | Build GameTest as a shared library instead of static. |
+| `GMT_BUILD_EXAMPLE` | `ON` | Build the bundled example game (requires internet access; fetches GLFW 3.4). |
+| `GMT_BUILD_TOOL` | `ON` | Build `GameTest-Tool`, the CLI runner. |
 
 ---
 
@@ -85,8 +92,6 @@ The framework accepts `--test=<path>` and `--test-mode=record|replay|disabled`. 
 ### Disabling at compile time
 
 Define `GMT_DISABLE` before including the header to turn every macro into a no-op. No object code is generated and no runtime overhead is incurred.
-
----
 
 ---
 
