@@ -76,6 +76,39 @@ bool GMT_ParseTestMode(const char** args, size_t arg_count, GMT_Mode* out_mode) 
   return false;
 }
 
+// Parses --headless from the given args array.
+bool GMT_ParseHeadlessMode(const char** args, size_t arg_count, bool* out_headless) {
+  if (!args || !out_headless) return false;
+  for (size_t i = 0; i < arg_count; ++i) {
+    const char* arg = args[i];
+    if (!arg) continue;
+    if (strcmp(arg, "--headless") == 0) {
+      *out_headless = true;
+      return true;
+    }
+  }
+  return false;
+}
+
+// Parses --work-dir=<path> from the given args array.
+bool GMT_ParseWorkingDirectory(const char** args, size_t arg_count, char* out_work_dir, size_t out_work_dir_size) {
+  if (!args || !out_work_dir || out_work_dir_size == 0) return false;
+  static const char prefix[] = "--work-dir=";
+  const size_t prefix_len = sizeof(prefix) - 1;
+  for (size_t i = 0; i < arg_count; ++i) {
+    const char* arg = args[i];
+    if (!arg) continue;
+    if (strncmp(arg, prefix, prefix_len) == 0) {
+      const char* value = arg + prefix_len;
+      size_t vlen = strlen(value);
+      if (vlen >= out_work_dir_size) return false;  // Buffer too small.
+      memcpy(out_work_dir, value, vlen + 1);
+      return true;
+    }
+  }
+  return false;
+}
+
 // ===== Report =====
 
 void GMT_PrintReport_(void) {

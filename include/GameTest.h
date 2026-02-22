@@ -287,6 +287,12 @@ GMT_API bool GMT_ParseTestFilePath(const char** args, size_t arg_count, char* ou
 // Parses --test-mode=record|replay|disabled from args. Returns false if not found.
 GMT_API bool GMT_ParseTestMode(const char** args, size_t arg_count, GMT_Mode* out_mode);
 
+// Parses --headless from args. Returns false if not found.
+GMT_API bool GMT_ParseHeadlessMode(const char** args, size_t arg_count, bool* out_headless);
+
+// Parses --work-dir=<path> from args. Returns false if not found.
+GMT_API bool GMT_ParseWorkingDirectory(const char** args, size_t arg_count, char* out_work_dir, size_t out_work_dir_size);
+
 // Prints a summary report. Called automatically at the end of a test run.
 GMT_API void GMT_PrintReport_(void);
 
